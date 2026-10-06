@@ -74,7 +74,7 @@ export function testReviewSession(
       updatedAtMs: Date.now(),
       traces: new Map(),
       stack: async () => [],
-      dismiss: async () => {},
+      dismiss: async () => true,
     },
   };
 }
@@ -101,6 +101,7 @@ export function testApiDocumentData(blocks: Block[]): ApiDocumentData {
     anchors: new Map(),
     images: new Map(),
     traces: new Map(),
+    boards: new Map(),
     maps: new Map(),
   };
 }

@@ -16,5 +16,7 @@ export interface ReviewSessionData {
   pullRequestUrl?: string;
   traces: ReadonlyMap<string, LoadedAgentTrace>;
   stack(signal: AbortSignal): Promise<ReviewStackLayer[]>;
-  dismiss(): Promise<void>;
+  /** Moves the board to Trash, asking first when other boards need it.
+   * False when the person kept it. */
+  dismiss(): Promise<boolean>;
 }

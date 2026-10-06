@@ -253,7 +253,9 @@ async function mountFixture(
                 keymap: "none",
               },
               setStep() {},
-              dismiss() {},
+              async dismiss() {
+                return true;
+              },
               reopen() {},
               async selectKeymap() {},
               close() {},
@@ -397,7 +399,9 @@ describe("block components", () => {
         keymap: "none",
       },
       setStep() {},
-      dismiss() {},
+      async dismiss() {
+        return true;
+      },
       reopen() {},
       selectKeymap,
       close() {},
@@ -612,7 +616,9 @@ describe("tutorial guide placement", () => {
         keymap: "none",
       },
       setStep() {},
-      dismiss() {},
+      async dismiss() {
+        return true;
+      },
       reopen() {},
       async selectKeymap() {},
       close() {},

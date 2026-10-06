@@ -44,7 +44,7 @@ it("keeps dwell continuous through live review updates and sends the latest vers
     updatedAtMs: 0,
     traces: new Map(),
     stack: async () => [],
-    dismiss: async () => {},
+    dismiss: async () => true,
   };
 
   const container = document.createElement("div");

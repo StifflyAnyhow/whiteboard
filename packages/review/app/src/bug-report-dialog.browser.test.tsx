@@ -234,7 +234,9 @@ function tutorialBridge(): ReviewCanvasTutorialBridge {
       keymap: "none",
     },
     setStep() {},
-    dismiss() {},
+    async dismiss() {
+      return true;
+    },
     reopen() {},
     async selectKeymap() {},
     close() {},

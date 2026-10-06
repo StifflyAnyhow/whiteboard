@@ -342,6 +342,27 @@ export interface ReviewCanvasBridge {
   reportDiagnostic?(diagnostic: ReviewCanvasDiagnostic): void;
 }
 
+/** A whiteboard the delete confirmation names. */
+export interface ReviewDeleteListedBoard {
+  title: string;
+  pullRequestNumber?: number;
+}
+
+/** Props for the board delete confirmation. */
+export interface ReviewDeleteConfirmationProps {
+  title: string;
+  /** The whiteboards whose links to it will show as deleted. */
+  linkedFrom: readonly ReviewDeleteListedBoard[];
+  /** Its children, in order, which move to top level. */
+  movesUp?: readonly ReviewDeleteListedBoard[];
+  /** It moves to Trash now, and is deleted from there later. */
+  trash?: boolean;
+  /** How many boards, when several are asked about together; `title`
+   * then names them all. */
+  count?: number;
+  onAnswer(confirmed: boolean): void;
+}
+
 export interface ReviewCanvasSetupActions {
   load(): Promise<ReviewCanvasInstallContent>;
   installCli(): Promise<void>;
@@ -779,7 +800,15 @@ export interface ReviewMenuRequest {
 
 export interface ReviewCanvasUi {
   setupTooltip?: ReviewCanvasBridge["setupTooltip"];
-  confirmDelete?(title: string): Promise<boolean>;
+  /** The boards let the host name the whiteboards that link to them and
+   * the children that move up; several are asked about together. With
+   * trash, they move to Trash, and the host asks only when other boards
+   * need them. */
+  confirmDelete?(
+    title: string,
+    reviewIds?: string | readonly string[],
+    trash?: boolean,
+  ): Promise<boolean>;
   showMenu(request: ReviewMenuRequest): ReviewDisposable;
 }
 
@@ -789,6 +818,10 @@ export interface ReviewCanvasModule {
     content: ReviewCanvasContent,
     ui?: ReviewCanvasUi,
   ): ReviewCanvasHandle;
+  mountDeleteConfirmation(
+    container: HTMLElement,
+    props: ReviewDeleteConfirmationProps,
+  ): ReviewDisposable;
 }
 
 // Tolerant of unknown keys so future additive fields never force a version

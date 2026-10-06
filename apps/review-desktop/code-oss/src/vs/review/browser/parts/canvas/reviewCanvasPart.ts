@@ -54,7 +54,7 @@ import {
 	REVIEW_STRUCTURAL_DIFF_SETTING,
 	REVIEW_TELEMETRY_SETTING,
 } from "../../../common/reviewConfigurationDefaults.js";
-import { resolveReviewSourceView, reviewSourceAnchor, type ReviewSourceView, type ReviewSourceSelection } from "../../../common/reviewProtocol.js";
+import { ReviewApiClient, type ReviewApiSummary, resolveReviewSourceView, reviewSourceAnchor, type ReviewSourceView, type ReviewSourceSelection } from "../../../common/reviewProtocol.js";
 import type {
 	ReviewCanvasBridge,
 	ReviewCanvasContent,
@@ -85,7 +85,7 @@ import {
 } from "../../../common/reviewProtocol.js";
 import { IReviewVerbsService } from "../../../contrib/verbs/reviewVerbs.js";
 import { vetoStoppingAskAgents } from "../../reviewAskShutdown.js";
-import { confirmReviewDeletion } from "../../reviewDeleteConfirmation.js";
+import { askInDialog, confirmReviewDeletion, type ReviewDeleteListedBoard, type ReviewDeleteNamed } from "../../reviewDeleteConfirmation.js";
 import { showReviewCanvasMenu } from "../../reviewCanvasMenu.js";
 import { ReviewTooltip } from "../../reviewTooltip.js";
 import { IReviewApiCatalogService, REVIEW_HAS_PUBLISHED_BOARD } from "../../../services/reviewApiCatalogService.js";
@@ -1113,12 +1113,17 @@ export class ReviewCanvasEditorPane extends EditorPane {
 			// A pending reveal waits for the new board's onReady, after its canvas subscribes.
 			this.canvas.value.update(content);
 		} else {
+			// Mount the dialog over the whole window, not just the canvas.
+			const dialogParent = this.layoutService.getContainer(getWindow(this.canvasMount));
 			this.canvas.value = assets.mountReviewCanvas(this.canvasMount, content, {
 				setupTooltip: this.setupTooltip,
-				confirmDelete: title => {
+				confirmDelete: async (title, reviewIds, trash) => {
 					const openedGeneration = this.loadGeneration;
-					return confirmReviewDeletion(this.dialogService, title,
-						() => openedGeneration === this.loadGeneration && this.isVisible());
+					const ask = askInDialog(assets.mountDeleteConfirmation, dialogParent);
+					const ids = typeof reviewIds === "string" ? [reviewIds] : (reviewIds ?? []);
+					return confirmReviewDeletion(ask, title,
+						() => openedGeneration === this.loadGeneration && this.isVisible(),
+						ids.length ? await this.namedOnDelete(ids) : undefined, trash, Math.max(1, ids.length));
 				},
 				showMenu: request => {
 					const openedGeneration = this.loadGeneration;
@@ -1192,6 +1197,41 @@ export class ReviewCanvasEditorPane extends EditorPane {
 		}
 		return store;
 	};
+
+	/** The boards linking to these, and their children, for the delete
+	 * confirmation, leaving out the boards asked about. Either is empty when
+	 * it can't be read. */
+	private async namedOnDelete(reviewIds: readonly string[]): Promise<ReviewDeleteNamed> {
+		const listed = ({ title, pullRequestNumber }: ReviewDeleteListedBoard): ReviewDeleteListedBoard => ({
+			title,
+			...(pullRequestNumber && { pullRequestNumber }),
+		});
+		const asked = new Set(reviewIds);
+		const client = new ReviewApiClient(await this.desktopConnection.getConnection());
+		const [linkedFrom, movesUp] = await Promise.all([
+			Promise.all(reviewIds.map((reviewId) => client.read<{ backlinks: ({ from: { board: string } } & ReviewDeleteListedBoard)[] }>(`/${encodeURIComponent(reviewId)}/links`)))
+				.then((reads) => [...new Map(reads.flatMap(({ backlinks }) => backlinks)
+					.filter((link) => !asked.has(link.from.board))
+					.map((link) => [link.from.board, listed(link)])).values()])
+				.catch((error) => {
+					this.logService.warn("[Whiteboard] Could not read the boards linking here:", error);
+					return [];
+				}),
+			client.read<ReviewApiSummary[]>("")
+				.then((boards) => {
+					const byId = new Map(boards.map((board) => [board.reviewId, board]));
+					return reviewIds.flatMap((reviewId) => byId.get(reviewId)?.children ?? []).flatMap((id) => {
+						const child = byId.get(id);
+						return child && !asked.has(id) ? [listed({ ...child, pullRequestNumber: child.origin?.pullRequestNumber })] : [];
+					});
+				})
+				.catch((error) => {
+					this.logService.warn("[Whiteboard] Could not read the boards nested here:", error);
+					return [];
+				}),
+		]);
+		return { linkedFrom, movesUp };
+	}
 
 	/** Hands a pending block reveal to the canvas once it shows that board. */
 	private revealPending(): void {

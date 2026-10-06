@@ -495,6 +495,8 @@ export function createReviewApi(
 
       // Only entries whose review (or the catalog) changed are re-read and re-sent.
       const dirty = new Set(subscriptions.keys());
+      // Bumped when a board a review links to changes, so its links reload.
+      const linksRevision = new Map<string, number>();
       // Bumped when a review's parent or siblings change, so its header
       // reloads them.
       const placeRevision = new Map<string, number>();
@@ -533,6 +535,7 @@ export function createReviewApi(
                         ...readReview(reviewId),
                         activity: store.activity.read(reviewId),
                         coverageRevision: data?.coverageRevision ?? 0,
+                        linksRevision: linksRevision.get(reviewId) ?? 0,
                         placeRevision: placeRevision.get(reviewId) ?? 0,
                       },
               };
@@ -559,7 +562,14 @@ export function createReviewApi(
               if (dirty.size > 0) notify();
             }) ?? (() => {}),
             store.subscribe((result) => {
-              if (mark(result.reviewId)) notify();
+              let marked = mark(result.reviewId);
+
+              for (const from of store.linkingBoards(result.reviewId)) {
+                linksRevision.set(from, (linksRevision.get(from) ?? 0) + 1);
+                marked = mark(from) || marked;
+              }
+
+              if (marked) notify();
             }),
             store.activity.subscribe((id) => {
               if (mark(id)) notify();

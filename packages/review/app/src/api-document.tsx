@@ -3,6 +3,8 @@ import { type DiffSelection } from "@review/lens-selection";
 import type { ReviewApiClient } from "@review/review-api/client";
 import {
   type Block,
+  type BoardRef,
+  boardLinks,
   elements,
   resourceReferences,
   selectionReferences,
@@ -24,6 +26,7 @@ import {
   renderBlock,
   stored,
 } from "./blocks";
+import type { BoardLinkTarget } from "./board-link";
 import { AuthoringCursorContext, Courier } from "./courier";
 import { documentStyles } from "./document-styles";
 import { withErasedBlocks } from "./draw-queue";
@@ -50,6 +53,8 @@ export interface ApiDocumentData {
   anchors: Map<string, SourcePeekAnchor>;
   images: Map<string, string>;
   traces: Map<string, Trace>;
+  /** Board link targets, keyed "<boardId>#<blockId>". */
+  boards: Map<string, BoardLinkTarget>;
   maps: Map<
     string,
     NormalizedSoftwareModel & {
@@ -81,6 +86,27 @@ export function createDocumentLoader(client: ReviewApiClient) {
     return cache.get(key) as Promise<T>;
   };
 
+  /** Where the board's links lead, keyed by board and block. */
+  const boardTargets = async (snapshot: Snapshot) => {
+    const boards: ApiDocumentData["boards"] = new Map();
+
+    if (!boardLinks(snapshot.reviewId, snapshot.document).length) return boards;
+
+    // On failure, leave targets unknown so links still render as links.
+    const links = await client
+      .read<{
+        outgoing: (BoardLinkTarget & { to: BoardRef })[];
+      }>(
+        `/${encodeURIComponent(snapshot.reviewId)}/links?version=${snapshot.version}`,
+      )
+      .catch(() => ({ outgoing: [] }));
+
+    for (const link of links.outgoing)
+      boards.set(`${link.to.board}#${link.to.block ?? ""}`, link);
+
+    return boards;
+  };
+
   return {
     dispose() {
       disposed = true;
@@ -103,6 +129,7 @@ export function createDocumentLoader(client: ReviewApiClient) {
         anchors: new Map(),
         images: new Map(),
         traces: new Map(),
+        boards: await boardTargets(snapshot),
         maps: new Map(),
       };
 
@@ -188,6 +215,10 @@ export function createDocumentLoader(client: ReviewApiClient) {
       );
 
       return data;
+    },
+    /** The same document, after a board it links to changed. */
+    async relink(data: ApiDocumentData): Promise<ApiDocumentData> {
+      return { ...data, boards: await boardTargets(data.snapshot) };
     },
   };
 }

@@ -11,6 +11,7 @@ import {
   Fragment,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -21,6 +22,7 @@ import {
 
 import { CopyIcon, copyText } from "./copy-text";
 import { homeStyles } from "./home-styles";
+import { CanvasUiContext } from "./host/canvas-ui";
 import { CheckIcon } from "./icons";
 import { homeGroupMarker, homeRowMarker } from "./markers.stylex";
 import { MenuSurface, menuSurfaceStyles } from "./menu-surface";
@@ -148,6 +150,7 @@ export function ReviewHome({
   const [deleted, setDeleted] = useState(new Set<string>());
   const [lifecycle, setLifecycle] = useState(new Map<string, string | null>());
   const [busy, setBusy] = useState(false);
+  const ui = useContext(CanvasUiContext);
   const busyRef = useRef(false);
   const [error, setError] = useState("");
 
@@ -527,16 +530,38 @@ export function ReviewHome({
   }, [inTrash]);
 
   async function changeLifecycle(
-    targets = selectedReviews,
+    chosen = selectedReviews,
     restore = false,
     undoing = false,
   ) {
     const action = restore ? onRestore : onTrash;
 
-    if (!action || busyRef.current || !targets.length) return;
+    if (!action || busyRef.current || !chosen.length) return;
     busyRef.current = true;
     setBusy(true);
     setError("");
+
+    // Boards other boards need ask first, together, naming their children
+    // and the boards that link to them; the host lets the rest through.
+    const asked =
+      restore ||
+      undoing ||
+      !ui?.confirmDelete ||
+      (await ui.confirmDelete(
+        homeTitle(chosen),
+        chosen.map((review) => review.reviewId),
+        true,
+      ));
+
+    const targets = asked ? chosen : [];
+
+    if (!targets.length) {
+      busyRef.current = false;
+      setBusy(false);
+
+      return;
+    }
+
     const succeeded: ReviewApiSummary[] = [];
     const failed = new Set<string>();
     const messages: string[] = [];
@@ -598,16 +623,26 @@ export function ReviewHome({
       void changeLifecycle(toast.targets, toast.kind === "trash", true);
   }
 
-  function deleteSelection(targets = selectedReviews) {
+  async function deleteSelection(targets = selectedReviews) {
     if (!targets.length) return;
 
-    if (inTrash) setConfirmation([...targets]);
-    else void changeLifecycle(targets);
+    if (!inTrash) return void changeLifecycle(targets);
+
+    // The host's dialog names the boards that link here and the children
+    // that move up; without a host, Home asks itself.
+    if (!ui?.confirmDelete) return setConfirmation([...targets]);
+
+    if (
+      await ui.confirmDelete(
+        homeTitle(targets),
+        targets.map((review) => review.reviewId),
+      )
+    )
+      await deletePermanently(targets);
   }
 
-  async function deletePermanently() {
-    if (!onDelete || !confirmation || busyRef.current) return;
-    const targets = confirmation;
+  async function deletePermanently(targets = confirmation) {
+    if (!onDelete || !targets || busyRef.current) return;
     setConfirmation(null);
     busyRef.current = true;
     setBusy(true);
@@ -736,7 +771,7 @@ export function ReviewHome({
 
         if (selectionMode || focused) {
           event.preventDefault();
-          deleteSelection(selectionMode ? selectedReviews : [focused!]);
+          void deleteSelection(selectionMode ? selectedReviews : [focused!]);
         }
       } else if (!editing && selectionMode && !event.repeat) {
         if (inTrash && !command && !event.altKey && key === "r") {
@@ -1584,7 +1619,7 @@ export function ReviewHome({
           <button
             disabled={busy || !(inTrash ? onDelete : onTrash)}
             {...stylex.props(styles.barButton, inTrash && styles.danger)}
-            onClick={() => deleteSelection()}
+            onClick={() => void deleteSelection()}
           >
             {inTrash ? "Delete…" : "Move to Trash"}{" "}
             <Shortcut xstyle={styles.barShortcut}>⌘⌫</Shortcut>
@@ -2047,6 +2082,13 @@ function HomeIcon({
       )}
     </svg>
   );
+}
+
+/** What a dialog calls the boards it asks about: one by its title. */
+function homeTitle(reviews: readonly ReviewApiSummary[]): string {
+  return reviews.length === 1
+    ? reviewTitle(reviews[0]!)
+    : `${reviews.length} whiteboards`;
 }
 
 export function reviewUpdatedAt(review: ReviewApiSummary): string {
