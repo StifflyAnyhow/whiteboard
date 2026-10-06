@@ -20,9 +20,9 @@ function summary(
     title,
     version: 1,
     repositoryName: "whiteboard",
-    repositoryGroup: {
-      key: extra.repositoryName ?? "whiteboard",
-      label: extra.repositoryName ?? "whiteboard",
+    project: {
+      id: extra.repositoryName ?? "whiteboard",
+      name: extra.repositoryName ?? "whiteboard",
     },
     repositoryPath: "/repo/main",
     createdAt: "2026-10-10T12:00:00Z",
@@ -443,7 +443,7 @@ describe("Home interactions", () => {
       }),
       summary("Other", { repositoryName: "beta" }),
       summary("Fold local", {
-        repositoryGroup: undefined,
+        project: undefined,
         repositoryPath: "/local/main",
       }),
     ]);

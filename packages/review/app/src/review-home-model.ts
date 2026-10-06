@@ -56,7 +56,10 @@ export function activeHomeChips(filters: HomeFilters): string[] {
 export function repositoryIdentity(
   review: ReviewApiSummary,
 ): { key: string; label: string } | undefined {
-  if (review.repositoryGroup) return review.repositoryGroup;
+  // A board's project names its repository, across its checkouts.
+  if (review.project)
+    return { key: review.project.id, label: review.project.name };
+
   const remote = review.shared?.cloneUrl || review.origin?.pullRequestUrl;
 
   if (!remote) return undefined;
