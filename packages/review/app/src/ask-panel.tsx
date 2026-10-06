@@ -39,6 +39,7 @@ import {
   useAskAgents,
   useOffer,
 } from "./ask-agent-picker";
+import { AskChangedBoards } from "./ask-changed-boards";
 import { AskComposer } from "./ask-composer";
 import { useShowOpenThread } from "./ask-delete";
 import { AskFilesProvider } from "./ask-files";
@@ -617,6 +618,10 @@ export function AskPanelContent({
           >
             <AskSelectionQuote selection={selection} />
             <AskOutdatedNote threadId={threadId ?? savedThreadId ?? null} />
+            <AskChangedBoards
+              threadId={threadId ?? savedThreadId ?? null}
+              turns={thread?.entries.length ?? 0}
+            />
 
             {thread ? <AskTurns thread={thread} onDecide={decide} /> : null}
 

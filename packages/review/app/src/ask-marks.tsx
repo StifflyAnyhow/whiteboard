@@ -313,6 +313,7 @@ function sameRows(before: readonly PinRow[], after: readonly PinRow[]) {
 function findMarks(
   article: HTMLElement,
   entries: readonly AskHistoryEntry[],
+  board: string | null,
 ): FoundMarks {
   // Conversations about the same words share a mark.
   const found = new Map<string, { range: Range; entries: AskHistoryEntry[] }>();
@@ -328,8 +329,13 @@ function findMarks(
   for (const entry of entries) {
     const { target } = entry.selection;
 
+    // Block ids are unique only per board.
+    const anchoredOn = entry.anchor?.board ?? board;
+
+    if (anchoredOn !== board) continue;
+
     if (target.kind === "code") {
-      const key = `code:${target.path}:${target.side}:${target.startLine}:${target.endLine}`;
+      const key = `${anchoredOn}#code:${target.path}:${target.side}:${target.startLine}:${target.endLine}`;
       const mark = code.get(key);
 
       if (mark) mark.entries.push(entry);
@@ -346,7 +352,7 @@ function findMarks(
       continue;
     }
 
-    const key = `${target.anchor.blockId}:${at.start}:${at.end}`;
+    const key = `${anchoredOn}#${target.anchor.blockId}:${at.start}:${at.end}`;
     const range = at.range;
     const mark = found.get(key);
 
@@ -450,7 +456,9 @@ export function AskThreadMarks({
   revision: string;
 }): ReactElement | null {
   const history = useAskHistory();
+
   const entries = history?.entries;
+  const board = history?.board ?? null;
   const reportOutdated = history?.reportOutdated;
   const [article, setArticle] = useState<HTMLElement | null>(null);
 
@@ -483,7 +491,7 @@ export function AskThreadMarks({
     const place = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        const found = findMarks(article, entries);
+        const found = findMarks(article, entries, board);
 
         setMarks(found.marks);
         reportOutdated?.(found.outdated);
@@ -541,7 +549,7 @@ export function AskThreadMarks({
 
       setCssHighlight(article, ASK_HIGHLIGHT, []);
     };
-  }, [article, entries, revision, reportOutdated]);
+  }, [article, entries, board, revision, reportOutdated]);
 
   // A narrower column can wrap a passage onto another line of its block, so
   // its pin's offset is measured again when the block resizes. Across the

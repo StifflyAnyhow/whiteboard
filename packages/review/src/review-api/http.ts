@@ -1180,10 +1180,15 @@ export function createReviewApi(
   }
 
   if (ask && data) {
+    const projectOf = (reviewId: string) =>
+      isShared(reviewId) || !store.has(reviewId)
+        ? undefined
+        : store.projectOf(reviewId);
+
     const readThread = (reviewId: string, threadId: string) => {
       const thread = ask.threads.get(threadId);
 
-      if (!thread || thread.reviewId !== reviewId)
+      if (!thread)
         throw new ReviewInputError("This conversation has ended.", 404);
 
       return thread;
@@ -1330,7 +1335,10 @@ export function createReviewApi(
             ? store.askHistory.updateSession(id, sessionId)
             : store.askHistory.save({
                 id,
-                reviewId,
+                anchor:
+                  target.kind === "text" && target.anchor
+                    ? { board: reviewId, block: target.anchor.blockId }
+                    : { board: reviewId },
                 agent: input.agent,
                 sessionId,
                 version: snapshot.version,
@@ -1367,7 +1375,10 @@ export function createReviewApi(
 
       readReview(reviewId);
 
-      return context.json({ threads: store.askHistory.list(reviewId) });
+      return context.json({
+        threads: store.askHistory.list(reviewId, projectOf(reviewId)),
+        board: reviewId,
+      });
     });
 
     // The threads of every open Ask in a review, over one connection. Before
@@ -1386,20 +1397,32 @@ export function createReviewApi(
           threads.map((threadId) => {
             const thread = ask.threads.get(threadId);
 
-            return [
-              threadId,
-              thread?.reviewId === reviewId ? thread : undefined,
-            ];
+            return [threadId, thread];
           }),
         ),
       );
+    });
+
+    // The boards a thread changed: titles from any project, so only for a
+    // local caller.
+    app.get("/:id/ask/:threadId/boards", (context) => {
+      const threadId = context.req.param("threadId");
+      const record = store.askHistory.get(threadId);
+
+      const anchor =
+        record?.anchor.board ?? ask.threads.get(threadId)?.reviewId;
+
+      if (remoteCaller(context) || !anchor)
+        throw new ReviewInputError("This conversation was not found.", 404);
+
+      return context.json({ boards: store.boardsChangedBy(threadId) });
     });
 
     // A saved conversation, without starting its agent.
     app.get("/:id/ask/:threadId", (context) => {
       const record = store.askHistory.get(context.req.param("threadId"));
 
-      if (record?.reviewId !== context.req.param("id"))
+      if (!record)
         throw new ReviewInputError("This conversation was not found.", 404);
       const target = record.selection.target;
 
@@ -1431,17 +1454,19 @@ export function createReviewApi(
         const threadId = context.req.param("threadId");
         const live = ask.threads.get(threadId);
 
-        if (live?.reviewId === reviewId) return context.json({ threadId });
+        if (live) return context.json({ threadId });
         const record = store.askHistory.get(threadId);
 
         const { picks } = askOpenSchema.parse(
           await readBoundedRequestJson(context.req.raw, undefined, {}),
         );
 
-        if (record?.reviewId !== reviewId)
+        if (!record)
           throw new ReviewInputError("This conversation was not found.", 404);
 
-        const snapshot = readReview(reviewId, record.version);
+        // The thread runs in the checkout of the board it started on.
+        const anchor = record.anchor.board;
+        const snapshot = readReview(anchor, record.version);
         const checkout = await data.agentCheckout(snapshot);
         const target = record.selection.target;
 
@@ -1456,7 +1481,7 @@ export function createReviewApi(
         assertWritable(reviewId);
         ask.threads.open({
           id: record.id,
-          reviewId,
+          reviewId: anchor,
           agent: record.agent,
           cwd: checkout.rootPath,
           head: checkout.head,
@@ -1671,11 +1696,12 @@ export function createReviewApi(
       const reviewId = context.req.param("id");
       const threadId = context.req.param("threadId");
 
-      if (store.askHistory.get(threadId)?.reviewId !== reviewId)
+      const record = store.askHistory.get(threadId);
+
+      if (!record)
         throw new ReviewInputError("This conversation was not found.", 404);
 
-      if (ask.threads.get(threadId)?.reviewId === reviewId)
-        ask.threads.close(threadId);
+      if (ask.threads.get(threadId)) ask.threads.close(threadId);
       store.askHistory.delete(threadId);
 
       return context.json({ ok: true });
