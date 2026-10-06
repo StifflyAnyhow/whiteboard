@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ReviewInputError } from "./document.js";
+import { createReviewApi } from "./http.js";
 import { openLocalReviewStore } from "./local-data.js";
 import {
   type PullRequestDeps,
@@ -211,14 +212,21 @@ describe("creating a review from a pull request URL alone", () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  const createFromUrl = (
+  const createFromUrl = async (
     fields: {
       title?: string;
       target?: { kind: "commits"; repositoryId: string; head: string };
     } = {},
+    into = checkout,
   ) =>
     local.store.execute(
-      command({ type: "create", pullRequestUrl: url, ...fields }),
+      command({
+        type: "create",
+        pullRequestUrl: url,
+        ...(fields.target
+          ? fields
+          : { ...fields, repositoryId: (await local.data.register(into)).id }),
+      }),
     );
 
   const upstreamHead = () => gitIn(upstream)("rev-parse", "refs/pull/7/head");
@@ -263,9 +271,7 @@ describe("creating a review from a pull request URL alone", () => {
   });
 
   it("returns the existing review for a repeat, comparing against the PR's current head", async () => {
-    await local.data.register(checkout);
-    const first = command({ type: "create", pullRequestUrl: url });
-    const created = await local.store.execute(first);
+    const created = await createFromUrl();
 
     expect(await createFromUrl()).toMatchObject({
       created: false,
@@ -364,7 +370,7 @@ describe("creating a review from a pull request URL alone", () => {
     });
   });
 
-  it("asks for a registered checkout of the PR's repository", async () => {
+  it("refuses a checkout of another repository", async () => {
     const other = path.join(directory, "other");
     gitIn(directory)("init", "-q", other);
     gitIn(other)(
@@ -373,9 +379,9 @@ describe("creating a review from a pull request URL alone", () => {
       "origin",
       "https://github.com/acme/other.git",
     );
-    await local.data.register(other);
-
-    await expect(createFromUrl()).rejects.toMatchObject({ status: 404 });
+    await expect(createFromUrl({}, other)).rejects.toMatchObject({
+      status: 404,
+    });
     expect(ghCalls).toBe(0);
     expect(local.store.list()).toEqual([]);
   });
@@ -386,7 +392,11 @@ describe("creating a review from a pull request URL alone", () => {
 
     const create = () =>
       local.store.execute(
-        command({ type: "create", pullRequestUrl: enterprise }),
+        command({
+          type: "create",
+          pullRequestUrl: enterprise,
+          repositoryId,
+        }),
       );
 
     await expect(create()).rejects.toBeInstanceOf(ReviewInputError);
@@ -398,6 +408,81 @@ describe("creating a review from a pull request URL alone", () => {
     expect(local.store.read(reviewId)).toMatchObject({
       pins: { repositoryId, base: fork, head: upstreamHead() },
       origin: { pullRequestUrl: enterprise, pullRequestNumber: 7 },
+    });
+  });
+
+  describe("as an agent names it to /commands", () => {
+    const post = async <Operation>(operation: Operation) => {
+      const response = await createReviewApi(local.store, local.data).request(
+        "/commands",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ operation }),
+        },
+      );
+
+      return {
+        status: response.status,
+        // SAFETY: a command's result names the board it saved.
+        reviewId: ((await response.json()) as { reviewId?: string }).reviewId,
+      };
+    };
+
+    it("creates a board from a PR number on the checkout's repository", async () => {
+      const { status, reviewId } = await post({
+        type: "create",
+        target: {
+          kind: "pullRequest",
+          repositoryPath: checkout,
+          pullRequest: 7,
+        },
+      });
+
+      expect(status).toBe(200);
+      expect(local.store.read(reviewId!)).toMatchObject({
+        pins: { base: fork, head: upstreamHead() },
+        origin: { pullRequestUrl: url, pullRequestNumber: 7 },
+      });
+    });
+
+    it("retargets a board to a PR", async () => {
+      const { reviewId } = await post({
+        type: "create",
+        title: "Plan",
+        target: { kind: "project", repositoryPath: checkout },
+      });
+
+      const { status } = await post({
+        type: "set_target",
+        reviewId,
+        target: {
+          kind: "pullRequest",
+          repositoryPath: checkout,
+          pullRequest: url,
+        },
+      });
+
+      expect(status).toBe(200);
+      expect(local.store.read(reviewId!)).toMatchObject({
+        pins: { base: fork, head: upstreamHead() },
+        origin: { pullRequestUrl: url },
+      });
+    });
+
+    it("checks a retarget before asking GitHub", async () => {
+      const { status } = await post({
+        type: "set_target",
+        reviewId: "missing",
+        target: {
+          kind: "pullRequest",
+          repositoryPath: checkout,
+          pullRequest: 7,
+        },
+      });
+
+      expect(status).toBe(404);
+      expect(ghCalls).toBe(0);
     });
   });
 
@@ -433,7 +518,7 @@ describe("creating a review from a pull request URL alone", () => {
       pointAtUpstream(jj("git", "root"));
       const { id: repositoryId } = await local.data.register(jjRepo);
 
-      const { reviewId } = await createFromUrl();
+      const { reviewId } = await createFromUrl({}, jjRepo);
 
       const pins = local.store.read(reviewId).pins!;
       expect(pins).toMatchObject({

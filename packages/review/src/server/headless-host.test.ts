@@ -192,7 +192,12 @@ it("shares review identity, resources, sessions and live changes with Desktop in
       operation: {
         type: "create",
         title: "Shared review",
-        target: { kind: "commits", ...pins },
+        target: {
+          kind: "commits",
+          repositoryPath: repo.directory,
+          base: repo.base,
+          head: repo.head,
+        },
       },
     });
 
@@ -580,7 +585,7 @@ it("authenticates clients, reports capabilities and readiness without exposing t
       title: "No UI",
       target: {
         kind: "commits",
-        repositoryId: registered.id,
+        repositoryPath: repo.directory,
         base: repo.base,
         head: repo.head,
       },
@@ -681,7 +686,7 @@ it("reports attached Desktops and sends each the reviews to open", async () => {
         title: "Opened remotely",
         target: {
           kind: "commits",
-          repositoryId: registered.id,
+          repositoryPath: repo.directory,
           base: repo.base,
           head: repo.head,
         },
@@ -728,10 +733,14 @@ async function reviewsOfBothKinds(client: ReviewApiClient) {
   return {
     repo,
     root: await realpath(repo.directory),
-    worktree: await create({ kind: "worktree", repositoryId, base: repo.base }),
+    worktree: await create({
+      kind: "worktree",
+      repositoryPath: repo.directory,
+      base: repo.base,
+    }),
     commits: await create({
       kind: "commits",
-      repositoryId,
+      repositoryPath: repo.directory,
       base: repo.base,
       head: repo.head,
     }),
@@ -892,7 +901,7 @@ it("rejects a second owner and keeps separate CI job stores independent", async 
       title: "First job only",
       target: {
         kind: "commits",
-        repositoryId: registered.id,
+        repositoryPath: repo.directory,
         base: repo.base,
         head: repo.head,
       },
