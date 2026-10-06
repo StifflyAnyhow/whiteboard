@@ -37,6 +37,7 @@ import {
 } from "@review/desktop-discovery";
 import { readReviewPackageVersion } from "@review/package-paths";
 import type { LocalReviewData } from "@review/review-api/local-data.js";
+import { ASK_THREAD_ENV } from "@review/review-api/request-origin.js";
 import type { ReviewStore } from "@review/review-api/store.js";
 import {
   devReviewHome,
@@ -145,14 +146,19 @@ export function createGlobalReviewServer(
   // Ask sessions get its MCP server, `whiteboard mcp`; an agent whose model
   // would not get it uses `whiteboard api` from its shell instead.
   const askTools: AskTools = {
-    mcpServers: () =>
+    mcpServers: (threadId) =>
       discovery.cliPath
         ? [
             {
               name: "whiteboard",
               command: process.execPath,
               args: [discovery.cliPath, "mcp"],
-              env: askCliEnv(),
+              env: [
+                ...askCliEnv(),
+                ...(threadId
+                  ? [{ name: ASK_THREAD_ENV, value: threadId }]
+                  : []),
+              ],
             },
           ]
         : [],

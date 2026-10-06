@@ -92,9 +92,9 @@ const READ_ONLY_MCP_SERVERS = new Set([
   "fff",
 ]);
 
-/** MCP servers Whiteboard gives every Ask session. Their tool calls are
- * Whiteboard's own, so they run without asking the reviewer. */
-export type AskMcpServers = () => McpServer[];
+/** MCP servers Whiteboard gives every Ask session, given its thread id. Their
+ * tool calls are Whiteboard's own, so they run without asking the reviewer. */
+export type AskMcpServers = (threadId?: string) => McpServer[];
 
 interface AskThreadBase {
   /** Stable across reopening; a new conversation gets a fresh one. */
@@ -226,7 +226,7 @@ export class AskThread {
     private readonly limits: AskThreadLimits = askThreadLimits,
   ) {
     this.id = start.id ?? randomUUID();
-    this.mcpServers = mcpServers();
+    this.mcpServers = mcpServers(this.id);
     this.picks = { ...start.picks };
     this.state = {
       id: this.id,
@@ -599,6 +599,7 @@ export class AskThread {
     const launched = await this.launch(this.start.agent, this.start.cwd, {
       bypass: this.state.bypass,
       mcpServers: this.mcpServers,
+      threadId: this.id,
     });
 
     // Closed, stopped or given up on while the process started.
