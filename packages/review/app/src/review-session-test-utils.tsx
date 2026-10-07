@@ -69,11 +69,12 @@ export function testReviewSession(
       },
     }),
     review: {
+      reviewId: config.reviewId ?? "test-review",
       pins: { base: "a".repeat(40), head: "b".repeat(40) },
       historicalRevision: null,
       updatedAtMs: Date.now(),
       traces: new Map(),
-      stack: async () => [],
+      place: async () => ({ siblings: [] }),
       dismiss: async () => true,
     },
   };

@@ -114,6 +114,74 @@ it("guides missing-review reads and opens to an agent while keeping missing vers
 });
 
 describe("snapshot authoring", () => {
+  it("keeps the name of a base branch its pins resolve", async () => {
+    // Any name resolves to 1…; a full hash to itself; no base to 3….
+    providers.resolveTarget = async (target) => ({
+      target,
+      pins: {
+        repositoryId: "repo",
+        base:
+          !("base" in target) || !target.base
+            ? "3".repeat(40)
+            : target.base.length === 40
+              ? target.base
+              : "1".repeat(40),
+        head: "2".repeat(40),
+      },
+    });
+
+    const created = (base: string) =>
+      store.execute(
+        request({
+          type: "create",
+          title: "Branch",
+          target: {
+            kind: "commits",
+            repositoryId: "repo",
+            base,
+            head: "kt/links",
+          },
+        }),
+      );
+
+    const named = await created("main");
+    const hashed = await created("1".repeat(7));
+    const hexNamed = await created("cafe123");
+
+    expect(store.read(named.reviewId).origin?.baseRef).toBe("main");
+    expect(store.read(hashed.reviewId).origin?.baseRef).toBeUndefined();
+    expect(store.read(hexNamed.reviewId).origin?.baseRef).toBe("cafe123");
+
+    // A retarget onto another base forgets the old name.
+    for (const base of ["4".repeat(40), undefined]) {
+      await store.execute(
+        request({
+          type: "set_target",
+          reviewId: named.reviewId,
+          target: {
+            kind: "commits",
+            repositoryId: "repo",
+            head: "kt/links",
+            ...(base && { base }),
+          },
+        }),
+      );
+      expect(store.read(named.reviewId).origin?.baseRef).toBeUndefined();
+      await store.execute(
+        request({
+          type: "set_target",
+          reviewId: named.reviewId,
+          target: {
+            kind: "commits",
+            repositoryId: "repo",
+            base: "main",
+            head: "kt/links",
+          },
+        }),
+      );
+    }
+  });
+
   it("binds PR identity without erasing content, versions changes, and clears stale identity across repositories", async () => {
     const url = "https://github.com/devdotfast/review/pull/310";
 
@@ -2198,6 +2266,60 @@ describe("snapshot authoring", () => {
       expect(await icon()).toBe("board");
     } finally {
       await reader.cancel();
+    }
+  });
+
+  it("sends a PR board's header again when its PR's state is read", async () => {
+    const url = "https://github.com/acme/widget/pull/7";
+    const { reviewId } = await create();
+
+    await store.execute(
+      request({
+        type: "set_target",
+        reviewId,
+        target: { kind: "commits", ...pins },
+        pullRequestUrl: url,
+      }),
+    );
+
+    const data = new LocalReviewData(store, {
+      manageWorkspaces: false,
+      pullRequestStates: true,
+      pullRequests: {
+        run: async () =>
+          JSON.stringify({
+            number: 7,
+            title: "Widgets",
+            baseRefName: "main",
+            state: "MERGED",
+          }),
+        fetch: async () => new Response("{}", { status: 500 }),
+      },
+    });
+
+    const watch = await createReviewApi(store, data).request(
+      `/watch?subscriptions=${encodeURIComponent(JSON.stringify([{ reviewId, mode: "textual" }]))}`,
+    );
+
+    const reader = watch.body!.pipeThrough(new TextDecoderStream()).getReader();
+
+    let buffered = "";
+
+    const next = async () => {
+      while (!buffered.includes("\n")) buffered += (await reader.read()).value;
+      const line = buffered.slice(0, buffered.indexOf("\n"));
+      buffered = buffered.slice(line.length + 1);
+
+      return JSON.parse(line)[0].value;
+    };
+
+    try {
+      expect(await next()).toMatchObject({ placeRevision: 0 });
+      // The first line asked GitHub; its answer moves the header.
+      expect(await next()).toMatchObject({ placeRevision: 1 });
+    } finally {
+      await reader.cancel();
+      await data.close();
     }
   });
 

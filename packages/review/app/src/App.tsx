@@ -87,7 +87,6 @@ import {
 } from "./review-panel";
 import { type ReviewDiffScope, askColumnShown } from "./review-panel-store";
 import { ReviewRootsProvider, useReviewContainer } from "./review-root-context";
-import { ReviewStackSelector } from "./review-stack-selector";
 import { offeredReviewViews, reviewViewLabel } from "./review-view-route";
 import { useReviewViewStateSync } from "./review-view-state";
 import { ReviewCommitsView } from "./ReviewCommitsView";
@@ -759,7 +758,6 @@ function ReviewLayoutContent({
                   }}
                 />
               </div>
-              <ReviewStackSelector />
               <ShareControl />
               <IconButton
                 xstyle={shellStyles.topbarItem}

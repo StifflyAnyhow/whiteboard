@@ -37,7 +37,6 @@ import {
 import type { AskThreads } from "@review/ask/threads.js";
 import { watchAskThreads } from "@review/ask/watch.js";
 import { fuzzyRank } from "@review/fuzzy-match.js";
-import { resolveReviewStackLayers } from "@review/review-stack.js";
 import { readBoundedRequestJson } from "@review/server/hono-http.js";
 import { HttpJsonError } from "@review/server/http-json.js";
 import {
@@ -80,6 +79,7 @@ import {
   uncategorizedReport,
 } from "./review-progress.js";
 import {
+  type PlacedBoard,
   type ReviewStore,
   type Snapshot,
   commandSchema,
@@ -302,10 +302,41 @@ export function createReviewApi(
     ...(shared?.list(mode) ?? []),
   ];
 
-  /** Where a board sits among its project's: its parent, and the parent's
-   * children in order. */
-  const placeOf = (id: string): ReviewBoardPlace =>
-    isShared(id) || !store.has(id) ? { siblings: [] } : store.place(id);
+  /** Where a board sits among its project's, and its PR's facts, for the
+   * board's header. */
+  const placeOf = (id: string): ReviewBoardPlace => {
+    if (isShared(id) || !store.has(id)) return { siblings: [] };
+
+    const { board, parent, siblings } = store.place(id);
+    const url = board.origin?.pullRequestUrl;
+    const state = data?.pullRequestState(url);
+    const baseBranch = url && data?.pullRequestBaseBranch(url);
+    const headBranch = url && data?.pullRequestHeadBranch(url);
+
+    const place = ({ reviewId, title, target }: PlacedBoard) => ({
+      reviewId,
+      title,
+      icon: boardIconKind(target),
+    });
+
+    return {
+      ...(state && { pullRequestState: state }),
+      ...(baseBranch && { baseBranch }),
+      ...(headBranch && { headBranch }),
+      ...(parent && { parent: place(parent) }),
+      siblings: siblings.map((child) => {
+        const childState = data?.pullRequestState(child.origin?.pullRequestUrl);
+
+        return {
+          ...place(child),
+          ...(child.origin?.pullRequestNumber && {
+            pullRequestNumber: child.origin.pullRequestNumber,
+          }),
+          ...(childState && { pullRequestState: childState }),
+        };
+      }),
+    };
+  };
 
   app.get("/", (context) =>
     context.json(catalog(coverageModeSchema.parse(context.req.query("mode")))),
@@ -532,6 +563,22 @@ export function createReviewApi(
         ),
       );
 
+      /** Bumps the place of each board whose place changed. */
+      const refreshPlaces = () => {
+        let marked = false;
+
+        for (const [id, key] of placeKeys) {
+          const next = placeKey(id);
+
+          if (next === key) continue;
+          placeKeys.set(id, next);
+          placeRevision.set(id, (placeRevision.get(id) ?? 0) + 1);
+          marked = mark(id) || marked;
+        }
+
+        return marked;
+      };
+
       const mark = (id: string | null) => {
         let marked = false;
 
@@ -595,9 +642,10 @@ export function createReviewApi(
 
               if (marked) notify();
             }),
-            // A linked PR's state shows on its link.
+            // A linked PR's state shows on its link, and a board's own PR
+            // state and branches in its header.
             data?.subscribePullRequestStates(() => {
-              let marked = false;
+              let marked = refreshPlaces();
 
               for (const { reviewId } of subscriptions)
                 if (reviewId !== null) {
@@ -620,18 +668,9 @@ export function createReviewApi(
               if (mark(null)) notify();
             }) ?? (() => {}),
             store.subscribeCatalog(() => {
-              let marked = mark(null);
+              const marked = refreshPlaces();
 
-              for (const [id, key] of placeKeys) {
-                const next = placeKey(id);
-
-                if (next === key) continue;
-                placeKeys.set(id, next);
-                placeRevision.set(id, (placeRevision.get(id) ?? 0) + 1);
-                marked = mark(id) || marked;
-              }
-
-              if (marked) notify();
+              if (mark(null) || marked) notify();
             }),
           ];
 
@@ -1840,15 +1879,12 @@ export function createReviewApi(
     });
   }
 
-  app.get("/:id/stack", async (context) => {
-    const query = readQuerySchemas.get.parse(context.req.query());
+  app.get("/:id/place", (context) => {
     const id = context.req.param("id");
-    const snapshot = readReview(id, query.version);
 
-    if (isShared(id) || !snapshot.pins) return context.json({ layers: [] });
-    const layers = await resolveReviewStackLayers(snapshot, store.list());
+    if (!isShared(id)) store.assertExists(id);
 
-    return context.json({ layers });
+    return context.json(placeOf(id));
   });
 
   // The board's project and its whiteboards, for the board's sidebar.
@@ -1887,14 +1923,6 @@ export function createReviewApi(
       backlinks: backlinks.map(withPullRequestState),
     });
   });
-  app.get("/:id/place", (context) => {
-    const id = context.req.param("id");
-
-    if (!isShared(id)) store.assertExists(id);
-
-    return context.json(placeOf(id));
-  });
-
   app.get("/:id/history", (context) => {
     const id = context.req.param("id");
 

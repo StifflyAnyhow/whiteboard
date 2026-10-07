@@ -31,6 +31,8 @@ export interface PullRequestRecord {
   number: number;
   title: string;
   baseRefName: string;
+  /** The PR's branch; GitHub keeps the name after the branch is deleted. */
+  headRefName?: string;
   /** GitHub's base commit, frozen at the PR's last update. */
   baseRefOid?: string;
   state?: PullRequestState;
@@ -86,6 +88,7 @@ const metadataSchema = z.object({
   number: z.number().int().positive(),
   title: z.string(),
   baseRefName: z.string().min(1),
+  headRefName: z.string().min(1).optional(),
   baseRefOid: z.string().optional(),
   state: z.enum(["OPEN", "CLOSED", "MERGED"]).optional(),
   isDraft: z.boolean().optional(),
@@ -124,7 +127,7 @@ export async function readPullRequest(
         "--repo",
         { value: `${host}/${slug}` },
         "--json",
-        "number,title,baseRefName,baseRefOid,state,isDraft",
+        "number,title,baseRefName,headRefName,baseRefOid,state,isDraft",
       ],
       { timeoutMs: GH_TIMEOUT_MS },
     );
@@ -206,6 +209,7 @@ export async function readPullRequest(
       number: z.number(),
       title: z.string(),
       base: z.object({ ref: z.string().min(1), sha: z.string() }),
+      head: z.object({ ref: z.string().min(1) }).optional(),
       state: z.enum(["open", "closed"]).optional(),
       draft: z.boolean().optional(),
       merged_at: z.string().nullable().optional(),
@@ -221,6 +225,7 @@ export async function readPullRequest(
     number: parsed.data.number,
     title: parsed.data.title,
     baseRefName: parsed.data.base.ref,
+    ...(parsed.data.head && { headRefName: parsed.data.head.ref }),
     baseRefOid: parsed.data.base.sha,
     ...(parsed.data.state && {
       state: parsed.data.merged_at

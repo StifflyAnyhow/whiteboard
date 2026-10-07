@@ -27,7 +27,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-it("exposes JSON section and Markdown headings plus imported PR and stack navigation", async () => {
+it("exposes JSON section and Markdown headings plus imported PR and its place under its parent", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal(
     "ResizeObserver",
@@ -79,29 +79,35 @@ it("exposes JSON section and Markdown headings plus imported PR and stack naviga
     },
   );
 
+  // Its parent, and the sibling it builds on.
+  const board = async (title: string) =>
+    (
+      await store.execute({
+        operation: {
+          type: "create",
+          title,
+          target: {
+            kind: "commits",
+            repositoryId: "repo",
+            base: "base",
+            head: "head",
+          },
+        },
+      })
+    ).reviewId;
+
+  const parent = await board("Stack");
+  const earlier = await board("Earlier");
+
+  for (const child of [earlier, reviewId])
+    await store.execute({
+      operation: { type: "set_parent", reviewId: child, parentId: parent },
+    });
+  await store.execute({
+    operation: { type: "set_dependencies", reviewId, dependsOn: [earlier] },
+  });
+
   const app = new Hono();
-  app.get("/reviews-api/:id/stack", (c) =>
-    c.json({
-      layers: [
-        {
-          branch: "first",
-          pullRequestNumber: 41,
-          pullRequestUrl: null,
-          reviewUuid: "11111111-1111-4111-8111-111111111111",
-          reviewTitle: "Earlier",
-          relation: "earlier",
-        },
-        {
-          branch: "second",
-          pullRequestNumber: 42,
-          pullRequestUrl: null,
-          reviewUuid: reviewId,
-          reviewTitle: "Navigation",
-          relation: "current",
-        },
-      ],
-    }),
-  );
   app.route("/reviews-api", createReviewApi(store));
   app.get("/reviews-api/:id/commits", (c) => c.json([]));
   const post = vi.fn<() => Promise<{ ok: true }>>(async () => ({ ok: true }));
@@ -144,7 +150,7 @@ it("exposes JSON section and Markdown headings plus imported PR and stack naviga
   expect(
     container.querySelector('a[href="https://github.com/example/repo/pull/42"]')
       ?.textContent,
-  ).toContain("42");
+  ).toContain("#42");
   const headings = [...container.querySelectorAll("article h2, article h3")];
   expect(headings.map((heading) => heading.textContent)).toEqual([
     "Summary",
@@ -179,6 +185,6 @@ it("exposes JSON section and Markdown headings plus imported PR and stack naviga
     });
   expect(scroll).toHaveBeenCalledTimes(4);
   expect(
-    container.querySelector('[aria-label="Pull request stack, 2 of 2"]'),
+    container.querySelector('[aria-label="2 of 2 in Stack"]'),
   ).not.toBeNull();
 });

@@ -38,8 +38,8 @@ import {
   ReviewFileContentRequestSchema,
   type ReviewFileContentResponse,
   ReviewFileContentResponseSchema,
-  type ReviewStackResponse,
-  ReviewStackResponseSchema,
+  type ReviewBoardPlace,
+  ReviewBoardPlaceSchema,
   type ReviewTutorialOpenResponse,
   ReviewTutorialOpenResponseSchema,
   type ReviewVerbRequest,
@@ -77,10 +77,8 @@ export function parseReviewDesktopDiscovery(
   return parseZod(ReviewDesktopDiscoverySchema, value);
 }
 
-export function parseReviewStackResponse(
-  value: JsonValue,
-): ReviewStackResponse {
-  return parseZod(ReviewStackResponseSchema, value);
+export function parseReviewBoardPlace(value: JsonValue): ReviewBoardPlace {
+  return parseZod(ReviewBoardPlaceSchema, value);
 }
 
 export function parseReviewCliInstallStatus(

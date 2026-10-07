@@ -2,7 +2,7 @@ import { fontSize } from "@canvas/scale.stylex";
 import {
   type ReviewCanvasContent,
   type ReviewDocumentWidthChoice,
-  parseReviewStackResponse,
+  parseReviewBoardPlace,
   resolveReviewSourceView,
 } from "@dev.fast/review-protocol";
 import type { ActivitySnapshot } from "@review/review-api/activity";
@@ -101,6 +101,9 @@ export function ApiCanvas({
 
   const [version, setVersion] = useState(content.version);
   const [coverageRevision, setCoverageRevision] = useState(0);
+  // Bumped when the board's parent or siblings change, so its header
+  // reads them again.
+  const [placeRevision, setPlaceRevision] = useState(0);
   const [activity, setActivity] = useState<ActivitySnapshot | "unknown">();
   const [cursor, setCursor] = useState<AuthoringCursor | null>(null);
   const [lensCursor, setLensCursor] = useState<AuthoringCursor | null>(null);
@@ -175,6 +178,7 @@ export function ApiCanvas({
           activity: ActivitySnapshot;
           coverageRevision?: number;
           linksRevision?: number;
+          placeRevision?: number;
         }
       >(
         content.reviewId,
@@ -186,6 +190,7 @@ export function ApiCanvas({
             nextCursor(current, lensMemory, snapshot, "lenses"),
           );
           setCoverageRevision(snapshot.coverageRevision ?? 0);
+          setPlaceRevision(snapshot.placeRevision ?? 0);
 
           if (version !== undefined) return;
 
@@ -315,6 +320,7 @@ export function ApiCanvas({
       ...baseSession,
       review: {
         trashedAt: snapshot.trashedAt,
+        reviewId: snapshot.reviewId,
         pins: snapshot.pins
           ? { base: snapshot.pins.base, head: snapshot.pins.head }
           : undefined,
@@ -322,18 +328,25 @@ export function ApiCanvas({
         historicalRevision: version === undefined ? null : String(version),
         updatedAtMs: Date.parse(snapshot.createdAt),
         headBranch: snapshot.origin?.branch,
+        baseRef:
+          snapshot.origin?.baseRef ??
+          (snapshot.target && "base" in snapshot.target
+            ? snapshot.target.base
+            : undefined),
+        headRef:
+          snapshot.target?.kind === "commits"
+            ? snapshot.target.head
+            : undefined,
         pullRequestNumber: snapshot.origin?.pullRequestNumber,
         pullRequestUrl: snapshot.origin?.pullRequestUrl,
         traces: new Map(
           [...data.traces].map(([id, trace]) => [id, retainedTrace(id, trace)]),
         ),
-        stack: async (signal: AbortSignal) =>
-          parseReviewStackResponse(
-            await client.read(
-              `/${snapshot.reviewId}/stack?version=${snapshot.version}`,
-              signal,
-            ),
-          ).layers,
+        placeRevision,
+        place: async (signal: AbortSignal) =>
+          parseReviewBoardPlace(
+            await client.read(`/${snapshot.reviewId}/place`, signal),
+          ),
         dismiss: async () => {
           if (
             ui?.confirmDelete &&
@@ -353,7 +366,7 @@ export function ApiCanvas({
         },
       },
     };
-  }, [baseSession, client, content.reviewId, data, version, ui]);
+  }, [baseSession, client, content.reviewId, data, placeRevision, version, ui]);
 
   // Only the latest version of a review this machine owns takes edits.
   const editable =
