@@ -83,7 +83,7 @@ export function HomeFilterPicker({
 
   const facetName =
     section === "repositories"
-      ? "Repo"
+      ? "Project"
       : section === "branches"
         ? "Branch"
         : section === "worktrees"
@@ -591,10 +591,10 @@ export function HomeFilterPicker({
               )}
               {(repoRows.length > 0 || treeRows.length > 0) && (
                 <section
-                  aria-label="Repository filters"
+                  aria-label="Project filters"
                   data-picker-section="repositories"
                 >
-                  <div {...stylex.props(styles.section)}>Repository</div>
+                  <div {...stylex.props(styles.section)}>Project</div>
                   {repoRows.map(renderRepo)}
                   {treeRows.map(({ repo, tree }) => (
                     <PickerRow

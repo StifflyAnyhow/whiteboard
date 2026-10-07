@@ -911,7 +911,7 @@ export function ReviewHome({
 
     const name =
       facet === "repositories"
-        ? "Repo"
+        ? "Project"
         : facet === "branches"
           ? "Branch"
           : "Worktree";
