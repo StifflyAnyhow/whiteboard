@@ -128,19 +128,22 @@ export class ReviewDiffViewService extends Disposable {
 		let height = 400;
 		let generation = 0;
 		let matches: DocumentMatch[] = [];
+		const embed: NonNullable<ReviewDiffViewSpec["document"]> = {
+			heightMode: spec.heightMode,
+			onDidChangeHeight: value => { height = value; heightChanged.fire(value); },
+			onDidFocus: spec.onDidFocus, onDidOpen: spec.onDidOpen, onDidShowHover: spec.onDidShowHover,
+			commit: spec.commit,
+		};
 		const view = this.create({
 			container: spec.container, lens, progress: spec.progress,
 			onSetViewed: spec.onSetViewed,
-			document: {
-				heightMode: spec.heightMode,
-				onDidChangeHeight: value => { height = value; heightChanged.fire(value); },
-				onDidFocus: spec.onDidFocus, onDidOpen: spec.onDidOpen, onDidShowHover: spec.onDidShowHover,
-			},
+			document: embed,
 		}, source) as DiffViewController;
 		lifetime.add(view);
 		return {
 			get height() { return height; },
 			setProgress: progress => view.setProgress(progress),
+			setCommit: commit => { embed.commit = commit; view.refreshHeaders(); },
 			onDidChangeHeight: heightChanged.event,
 			onDidError: view.onDidError,
 			setActive: active => spec.container.classList.toggle("review-document-code-active", active),
@@ -251,6 +254,7 @@ class DiffViewController extends Disposable implements ReviewDiffViewHandle {
 	private activeMatch: number | undefined;
 	private readonly findDecorations = this._register(new DisposableStore());
 	setCollapsed(collapsed: boolean): void { this.collapsed = collapsed; this.view?.setCollapsed(collapsed); }
+	refreshHeaders(): void { this.view?.refreshHeaders(); }
 	decorateMatches(matches: DocumentMatch[], active?: number): void {
 		this.matches = matches; this.activeMatch = active;
 		this.findDecorations.clear();

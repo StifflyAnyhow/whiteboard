@@ -51,7 +51,11 @@ import { z } from "zod";
 import { anchorQuotes } from "./anchor-quotes.js";
 import { authoringTools } from "./authoring-tools.js";
 import { documentText } from "./document-text.js";
-import { ReviewInputError, type ReviewTarget } from "./document.js";
+import {
+  ReviewInputError,
+  type ReviewTarget,
+  boardRepositoryId,
+} from "./document.js";
 import { instructionsQuerySchema, renderInstructions } from "./instructions.js";
 import type { LocalReviewData } from "./local-data.js";
 import {
@@ -1043,6 +1047,20 @@ export function createReviewApi(
 
       return context.json(await data.changes(pins));
     });
+    // A commit a quote is read at, in the board's repository.
+    app.get("/:id/commit/:commit", async (context) => {
+      const repositoryId = boardRepositoryId(
+        readReview(context.req.param("id")),
+      );
+
+      if (!repositoryId)
+        throw new ReviewInputError("This board has no repository.", 404);
+
+      return context.json(
+        await data.commitInfo(repositoryId, context.req.param("commit")),
+      );
+    });
+
     app.get("/:id/commits", async (context) => {
       const input = readQuerySchemas.commits.parse(context.req.query());
 
@@ -2133,8 +2151,7 @@ function withBoardRepository(
   if (!located.success) return body;
   const snapshot = board(located.data.operation.reviewId);
 
-  const repositoryId =
-    snapshot?.target?.repositoryId ?? snapshot?.pins?.repositoryId;
+  const repositoryId = snapshot ? boardRepositoryId(snapshot) : undefined;
 
   const edit = JSON.parse(
     JSON.stringify(located.data.operation.edit),

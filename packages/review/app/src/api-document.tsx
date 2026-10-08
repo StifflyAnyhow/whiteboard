@@ -5,6 +5,7 @@ import {
   type Block,
   type BoardRef,
   boardLinks,
+  boardRepositoryId,
   elements,
   resourceReferences,
   selectionReferences,
@@ -135,7 +136,7 @@ export function createDocumentLoader(client: ReviewApiClient) {
 
       for (const { id, source, label } of selectionReferences(
         snapshot.document,
-        { tolerant: true },
+        { tolerant: true, repositoryId: boardRepositoryId(snapshot) },
       )) {
         if (snapshot.staleSources?.includes(id)) continue;
         data.anchors.set(
@@ -421,9 +422,10 @@ export const DocumentNode = memo(function DocumentNode({
 
   const stale =
     block.type !== "section" &&
-    selectionReferences([block], { tolerant: true }).some((reference) =>
-      data.snapshot.staleSources?.includes(reference.id),
-    );
+    selectionReferences([block], {
+      tolerant: true,
+      repositoryId: boardRepositoryId(data.snapshot),
+    }).some((reference) => data.snapshot.staleSources?.includes(reference.id));
 
   const prose = node.type === "markdown" || node.type === "trace_quote";
 
