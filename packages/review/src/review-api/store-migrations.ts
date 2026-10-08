@@ -224,6 +224,17 @@ export const STORE_UPGRADES: readonly StoreUpgrade[] = [
           WHERE reviews.id=review_attention.review_id), ''), review_attention.viewed_at)
         WHERE review_id IN (SELECT id FROM reviews);`),
   },
+  {
+    version: 8,
+    name: "ask-thread-viewed",
+    // A thread keeps when it was last seen; one saved before has none.
+    run: ({ db }) => {
+      const columns = columnsOf(db, "ask_conversations");
+
+      if (columns.size > 0 && !columns.has("viewed_at"))
+        db.exec("ALTER TABLE ask_conversations ADD COLUMN viewed_at TEXT");
+    },
+  },
 ];
 
 export const STORE_VERSION = STORE_UPGRADES.at(-1)!.version;
