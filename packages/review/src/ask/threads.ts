@@ -172,6 +172,8 @@ export class AskThreads {
 
   private readonly mcpServers: AskMcpServers;
 
+  private readonly statusListeners = new Set<() => void>();
+
   constructor(
     private readonly launch: AskAgentLauncher,
     private readonly tools: AskTools = {},
@@ -203,6 +205,8 @@ export class AskThreads {
     );
 
     this.threads.set(thread.id, thread);
+    thread.onStatusChange(() => this.statusChanged());
+    this.statusChanged();
     void thread.open();
     this.sweeper ??= setInterval(() => this.sweep(), SWEEP_MS);
     this.sweeper.unref?.();
@@ -245,6 +249,19 @@ export class AskThreads {
     }
   }
 
+  /** Calls back when a thread opens, closes or changes its status. */
+  subscribeStatus(listener: () => void) {
+    this.statusListeners.add(listener);
+
+    return () => {
+      this.statusListeners.delete(listener);
+    };
+  }
+
+  private statusChanged() {
+    for (const listener of this.statusListeners) listener();
+  }
+
   get(id: string) {
     return this.threads.get(id);
   }
@@ -267,9 +284,10 @@ export class AskThreads {
 
   close(id: string, save = true) {
     const thread = this.threads.get(id);
-    this.threads.delete(id);
     this.unwatchedSince.delete(id);
     thread?.close(save);
+
+    if (this.threads.delete(id)) this.statusChanged();
   }
 
   closeDeletedReviews(isDeleted: (reviewId: string) => boolean) {

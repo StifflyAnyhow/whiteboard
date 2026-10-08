@@ -167,6 +167,7 @@ export class AskThread {
   /** The number of changes so far; a snapshot carries the one it includes. */
   private seq = 0;
   private readonly listeners = new Set<(update: AskUpdate) => void>();
+  private readonly statusListeners = new Set<() => void>();
   private readonly closers = new Set<() => void>();
   private readonly decisions = new Map<
     string,
@@ -258,11 +259,22 @@ export class AskThread {
     return { seq: this.seq, snapshot: this.state };
   }
 
+  get status() {
+    return this.state.status;
+  }
+
   /** Every change after the current `seq`, in order. */
   subscribe(listener: (update: AskUpdate) => void) {
     this.listeners.add(listener);
 
     return () => this.listeners.delete(listener);
+  }
+
+  /** Calls back when the status changes, without following the thread. */
+  onStatusChange(listener: () => void) {
+    this.statusListeners.add(listener);
+
+    return () => this.statusListeners.delete(listener);
   }
 
   /** Whether anything follows the thread, as an open panel does. */
@@ -1496,5 +1508,8 @@ export class AskThread {
     const update = { seq: this.seq, change };
 
     for (const listener of this.listeners) listener(update);
+
+    if (change.type === "set" && change.status)
+      for (const listener of this.statusListeners) listener();
   }
 }

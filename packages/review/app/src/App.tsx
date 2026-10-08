@@ -26,8 +26,8 @@ import {
 
 import { AgentSelectionProvider, useAgentSelection } from "./agent-selection";
 import { observeAgentTextSelection } from "./agent-text-selection";
+import { AskDesktopSync } from "./ask-dock";
 import { AskHistoryProvider } from "./ask-history";
-import { AskHistoryControl } from "./ask-history-list";
 import { AskThreadMarks } from "./ask-marks";
 import {
   AuthoringActivityBadge,
@@ -234,6 +234,7 @@ function ReviewLayout({
             openTraceSession={panelStore.getState().openTrace}
           >
             <AskHistoryProvider>
+              <AskDesktopSync />
               <AgentSelectionProvider revision={documentRevision}>
                 <ReviewLayoutContent
                   appRef={appRef}
@@ -748,7 +749,6 @@ function ReviewLayoutContent({
                 />
               </div>
               <ReviewStackSelector />
-              <AskHistoryControl />
               <ShareControl />
               <IconButton
                 xstyle={shellStyles.topbarItem}
