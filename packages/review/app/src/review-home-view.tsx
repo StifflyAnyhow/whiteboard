@@ -4,7 +4,6 @@ import {
   type ReviewCanvasInstallContent,
   type ReviewCanvasOnboarding,
   type ReviewCanvasSetupActions,
-  homeSessions,
 } from "@dev.fast/review-protocol";
 import { fuzzySegments } from "@review/fuzzy-match";
 import * as stylex from "@stylexjs/stylex";
@@ -160,12 +159,9 @@ export function ReviewHome({
   const [localView, setLocalView] = useState<"active" | "trash">("active");
   const inTrash = (view ?? localView) === "trash";
 
-  const hasPublished = useRef(
-    onboarding?.published || homeSessions(reviews).length > 0,
-  );
+  const hasPublished = useRef(onboarding?.published || reviews.length > 0);
 
-  if (onboarding?.published || homeSessions(reviews).length > 0)
-    hasPublished.current = true;
+  if (onboarding?.published || reviews.length > 0) hasPublished.current = true;
 
   const [confirmation, setConfirmation] = useState<ReviewApiSummary[] | null>(
     null,
@@ -258,7 +254,7 @@ export function ReviewHome({
 
   const catalog = useMemo(
     () =>
-      homeSessions(reviews)
+      reviews
         .filter((r) => !deleted.has(r.reviewId))
         .map((r) =>
           lifecycle.has(r.reviewId)

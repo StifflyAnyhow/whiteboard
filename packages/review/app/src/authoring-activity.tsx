@@ -151,12 +151,9 @@ function AgentPill({
 export function ReviewSurfaceLabel({
   hasContent,
   active,
-  label = "Whiteboard",
 }: {
   hasContent: boolean;
   active: boolean;
-  /** The tab's word; the scratchpad names itself. */
-  label?: string;
 }) {
   const activity = useContext(AuthoringActivityContext);
   const version = useContext(DisplayedReviewVersionContext) ?? null;
@@ -185,7 +182,7 @@ export function ReviewSurfaceLabel({
       )}
       data-working={live || undefined}
     >
-      {label}
+      Whiteboard
       {unread && <span {...stylex.props(styles.unread)} aria-hidden="true" />}
     </span>
   );

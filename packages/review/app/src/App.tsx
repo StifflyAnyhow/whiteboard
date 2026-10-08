@@ -291,12 +291,6 @@ function ReviewLayoutContent({
 }): ReactElement {
   const session = useReviewSession();
   const review = useReview();
-  // The scratchpad is a document and nothing else: no source tree to browse,
-  // nothing to share, nothing to dismiss.
-  const scratchpad = session.review?.kind === "scratchpad";
-  useEffect(() => {
-    if (scratchpad) captureUiEvent(session, "scratchpad_opened");
-  }, [scratchpad, session]);
   const discordTooltip = useTooltip("Join our Discord community");
   const sourceTreeTooltip = useTooltip("Open full read-only source");
   const panelStore = useReviewPanelStore();
@@ -411,12 +405,10 @@ function ReviewLayoutContent({
   const storedList = useTraceList();
   const diffFiles = useReviewDiffFiles();
 
-  // The scratchpad has no repository of its own, so no traces to show.
   const hasTraceSessions =
-    !scratchpad &&
-    ((session.review?.traces.size ?? 0) > 0 ||
-      storedList.status !== "loaded" ||
-      storedList.sessions.length > 0);
+    (session.review?.traces.size ?? 0) > 0 ||
+    storedList.status !== "loaded" ||
+    storedList.sessions.length > 0;
 
   const filesTabFileCount = diffScope
     ? diffScope.commit.fileCount
@@ -569,7 +561,6 @@ function ReviewLayoutContent({
                   >
                     {view === "review" ? (
                       <ReviewSurfaceLabel
-                        label={scratchpad ? "Scratchpad" : "Whiteboard"}
                         hasContent={document.empty === false}
                         active={activeView === "review"}
                       />
@@ -612,28 +603,26 @@ function ReviewLayoutContent({
                   shellStyles.topbarContext,
                 )}
               >
-                {!scratchpad && (
-                  <Button
-                    variant="ghost"
-                    xstyle={shellStyles.openSourceTree}
-                    aria-label="Source tree ↗"
-                    ref={sourceTreeTooltip}
-                    onClick={() => {
-                      captureUiEvent(session, "source_tree_opened", {
-                        via: "topbar",
-                      });
-                      session.surface.post({
-                        name: "openSourceTree",
-                        args: {},
-                      });
-                    }}
-                  >
-                    <span {...stylex.props(shellStyles.openSourceTreeLabel)}>
-                      Source tree
-                    </span>
-                    <span aria-hidden="true">↗</span>
-                  </Button>
-                )}
+                <Button
+                  variant="ghost"
+                  xstyle={shellStyles.openSourceTree}
+                  aria-label="Source tree ↗"
+                  ref={sourceTreeTooltip}
+                  onClick={() => {
+                    captureUiEvent(session, "source_tree_opened", {
+                      via: "topbar",
+                    });
+                    session.surface.post({
+                      name: "openSourceTree",
+                      args: {},
+                    });
+                  }}
+                >
+                  <span {...stylex.props(shellStyles.openSourceTreeLabel)}>
+                    Source tree
+                  </span>
+                  <span aria-hidden="true">↗</span>
+                </Button>
                 <AuthoringActivityBadge
                   onLocate={(view) => {
                     if (view === "diff")
@@ -667,19 +656,15 @@ function ReviewLayoutContent({
               <BugReportControl />
               <ReviewBatonChip outcome={review.submissionOutcome} />
               <DiffLayoutControl />
-              {!scratchpad &&
-                !review.historicalRevision &&
-                !review.submissionOutcome && (
-                  <div
-                    {...stylex.props(
-                      shellStyles.topbarItem,
-                      shellStyles.actionsDivider,
-                    )}
-                  />
-                )}
-              {!scratchpad &&
-              !review.historicalRevision &&
-              !review.submissionOutcome ? (
+              {!review.historicalRevision && !review.submissionOutcome && (
+                <div
+                  {...stylex.props(
+                    shellStyles.topbarItem,
+                    shellStyles.actionsDivider,
+                  )}
+                />
+              )}
+              {!review.historicalRevision && !review.submissionOutcome ? (
                 <ReviewCornerAction />
               ) : null}
             </div>
@@ -719,7 +704,6 @@ function ReviewLayoutContent({
                     documentMarker,
                     rightPanelOpen && documentStyles.articlePeekOpen,
                   )}
-                  data-kind={scratchpad ? "scratchpad" : undefined}
                 >
                   <ReviewDocumentBoundary
                     key={documentRevision}

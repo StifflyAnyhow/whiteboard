@@ -97,8 +97,6 @@ async function serve(input: HeadlessServerInput) {
     token: discovery.token,
     instanceId: discovery.instanceId,
     softwareMapEnabled: input.softwareMapEnabled,
-    // The scratchpad is the laptop's alone, even with a Desktop attached.
-    scratchpad: () => false,
     status: () => ({ key: "headless", home: input.stateDir }),
   });
 

@@ -246,7 +246,6 @@ export const shellStyles = stylex.create({
       [inTopbarActions()]: "anchors-visible",
     },
   },
-  // The scratchpad has no source tree or pins to set apart, so no rule.
   topbarContext: {
     display: "flex",
     flex: "0 0 auto",

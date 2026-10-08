@@ -296,7 +296,6 @@ export function ApiCanvas({
     return {
       ...baseSession,
       review: {
-        kind: snapshot.kind,
         trashedAt: snapshot.trashedAt,
         pins: snapshot.pins
           ? { base: snapshot.pins.base, head: snapshot.pins.head }
@@ -542,8 +541,7 @@ const CanvasDocument = memo(function CanvasDocument({
     render: DocumentBody,
     tocEntries: data.headings.entries,
     empty: snapshot.document.length === 0,
-    header:
-      snapshot.kind !== "scratchpad" || documentHasTitle(snapshot.document),
+    header: true,
     databaseLens: elements(snapshot.document).some(
       (node) => node.type === "database_lens",
     ),
