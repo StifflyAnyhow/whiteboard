@@ -88,17 +88,6 @@ export class AskHistory {
       UNIQUE(agent, session_id));
     CREATE INDEX IF NOT EXISTS ask_conversations_review ON ask_conversations(review_id, updated_at);`);
 
-    // Conversations saved before bypassing permissions lack the column.
-    if (
-      !db
-        .prepare("PRAGMA table_info(ask_conversations)")
-        .all()
-        .some((column) => String(column.name) === "bypass")
-    )
-      db.exec(
-        "ALTER TABLE ask_conversations ADD COLUMN bypass INTEGER NOT NULL DEFAULT 0",
-      );
-
     // What each agent offered last, so a new question can pick a model and
     // effort, and a command, before its agent starts.
     db.exec(
