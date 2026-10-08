@@ -163,6 +163,8 @@ export class ReviewCanvasEditorPane extends EditorPane {
 	private canvasMount: HTMLElement | null = null;
 	private targetDocument: Document | null = null;
 	private apiContent: Extract<ReviewCanvasContent, { kind: "api" }> | undefined;
+	/** A block to scroll to once this pane's board has loaded. */
+	private pendingReveal: { event: Extract<ReviewSurfaceEvent, { event: "revealBlock" }>; at: number } | undefined;
 	private loadGeneration = 0;
 	private openingGeneration: number | undefined;
 	private readonly refreshProgress: LongRunningOperation;
@@ -247,6 +249,11 @@ export class ReviewCanvasEditorPane extends EditorPane {
 		);
 		this._register(
 			verbs.onDidEmitSurfaceEvent((event) => {
+				if (event.event === "revealBlock") {
+					this.pendingReveal = { event, at: Date.now() };
+					this.revealPending();
+					return;
+				}
 				if (
 					event.event === "editorSelectionChanged" &&
 					event.reviewId !== this.apiContent?.reviewId
@@ -1103,6 +1110,7 @@ export class ReviewCanvasEditorPane extends EditorPane {
 		if (generation !== this.loadGeneration) return;
 		this.apiContent = content.kind === "api" ? content : undefined;
 		if (this.canvas.value) {
+			// A pending reveal waits for the new board's onReady, after its canvas subscribes.
 			this.canvas.value.update(content);
 		} else {
 			this.canvas.value = assets.mountReviewCanvas(this.canvasMount, content, {
@@ -1185,6 +1193,16 @@ export class ReviewCanvasEditorPane extends EditorPane {
 		return store;
 	};
 
+	/** Hands a pending block reveal to the canvas once it shows that board. */
+	private revealPending(): void {
+		const pending = this.pendingReveal;
+		// Every pane gets the request. Drop it after 10s so a board opened later doesn't jump.
+		if (pending && Date.now() - pending.at > 10_000) this.pendingReveal = undefined;
+		if (!pending || !this.pendingReveal || !this.canvas.value || pending.event.reviewId !== this.apiContent?.reviewId) return;
+		this.pendingReveal = undefined;
+		this.surfaceEvents.fire(pending.event);
+	}
+
 	/** The bridge members every canvas shares; `onReady` runs once the mount reports ready. */
 	private sharedBridge(
 		generation: number,
@@ -1219,6 +1237,7 @@ export class ReviewCanvasEditorPane extends EditorPane {
 				if (generation !== this.loadGeneration || !this.targetDocument) return;
 				this.targetDocument.body.dataset["reviewCanvasReady"] = "true";
 				onReady();
+				this.revealPending();
 			},
 			reportDiagnostic: (diagnostic) => {
 				if (generation === this.loadGeneration && diagnostic.level === "error") {
