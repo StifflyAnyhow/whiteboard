@@ -390,8 +390,8 @@ export interface ReviewCanvasBridge {
 export interface ReviewAskState {
   /** The right column shows something: Ask docked, or a peek. */
   docked: boolean;
-  /** The saved thread on screen, docked or not. */
-  threadId?: string;
+  /** The saved threads on screen: the column's and the floating one. */
+  threadIds: string[];
 }
 
 /** Changed lines over a lens or the whole diff, and how many are left. */
@@ -511,12 +511,12 @@ export interface ReviewSidebarSectionProps {
     boards: ReviewApiSummary[];
   };
   /** Threads: every project's, the board's project, the filter, and the
-   * thread open in Ask. */
+   * threads open in Ask. */
   threads?: {
     list: readonly ReviewProjectThread[];
     project?: string;
     filter: ReviewThreadsFilter;
-    open?: string;
+    open?: readonly string[];
   };
   onFilterThreads?(filter: ReviewThreadsFilter): void;
   onOpenThread?(threadId: string): void;
@@ -899,6 +899,8 @@ export type ReviewCanvasContent =
       softwareMapEnabled?: boolean;
       documentWidth?: ReviewDocumentWidthChoice;
       reviewId: string;
+      /** The board's project: its boards share the threads on screen. */
+      projectId?: string;
       version?: number;
       bridge: ReviewCanvasBridge;
       setTitle?(title: string): void;

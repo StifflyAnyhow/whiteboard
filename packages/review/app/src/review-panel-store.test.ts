@@ -32,113 +32,130 @@ const selection = {
 
 const presence = { agentName: "Claude Code" } as const;
 
-/** The key of the Ask shown in that place. */
-function shownAt(store: ReviewPanelStore, place: "docked" | "window") {
-  const state = store.getState();
-
-  return place === "docked" ? state.askDocked : state.askWindow;
-}
+const saved = (threadId: string) =>
+  ({ type: "saved", threadId, selection, agent: "claude" }) as const;
 
 function working(store: ReviewPanelStore, key: number, threadId = "thread") {
   store.getState().reportAsk(key, { threadId, busy: true, presence });
 }
 
-describe("Ask", () => {
-  it("a peek takes a docked Ask's place; a diagram only covers it", () => {
-    const store = createReviewPanelStore();
-    store.getState().openAsk(selection);
-    const key = shownAt(store, "docked")!;
-    expect(askShown(store.getState(), key)).toBe("panel");
+/** The thread each place shows, by its conversation. */
+function placed(store: ReviewPanelStore) {
+  const { asks, askColumn, askWindow, active } = store.getState();
 
+  const thread = (key: number | null) =>
+    asks.find((ask) => ask.key === key)?.threadId ?? null;
+
+  return {
+    column: active ? "peek" : thread(askColumn),
+    window: thread(askWindow),
+    onScreen: asks.length,
+  };
+}
+
+describe("Ask", () => {
+  it("leaves the column to whatever opens last; a working thread floats", () => {
+    const store = createReviewPanelStore();
+    store.getState().openAskView(saved("idle"));
+
+    store.getState().openPeek({ kind: "peek", anchor, content });
+    expect(placed(store)).toEqual({
+      column: "peek",
+      window: null,
+      onScreen: 0,
+    });
+
+    store.getState().openAskView(saved("working"));
+    working(store, store.getState().askColumn!, "working");
+    store.getState().openPeek({ kind: "peek", anchor, content });
+    expect(placed(store)).toEqual({
+      column: "peek",
+      window: "working",
+      onScreen: 1,
+    });
+
+    // Closing the peek brings nothing back.
+    store.getState().close();
+    expect(placed(store)).toEqual({
+      column: null,
+      window: "working",
+      onScreen: 1,
+    });
+  });
+
+  it("floats one thread at a time: the newer takes the window", () => {
+    const store = createReviewPanelStore();
+
+    for (const threadId of ["first", "second"]) {
+      store.getState().openAskView(saved(threadId));
+      working(store, store.getState().askColumn!, threadId);
+    }
+
+    expect(placed(store)).toEqual({
+      column: "second",
+      window: "first",
+      onScreen: 2,
+    });
+
+    store.getState().openAskView(saved("third"));
+    expect(placed(store)).toEqual({
+      column: "third",
+      window: "second",
+      onScreen: 2,
+    });
+  });
+
+  it("keeps a working thread afloat when it opens another view", () => {
+    const store = createReviewPanelStore();
+    store.getState().openAskView(saved("floating"));
+    const key = store.getState().askColumn!;
+    working(store, key, "floating");
+    store.getState().popOutAsk(key);
+    store.getState().openAskView(saved("docked"));
+
+    store.getState().openAskView(saved("other"), { from: key });
+    expect(placed(store)).toEqual({
+      column: "other",
+      window: "floating",
+      onScreen: 2,
+    });
+
+    // An idle one gives the window to what it opened.
     store
       .getState()
-      .openOverlayTour({ tourId: "flow", kind: "sequence" }, "step-1");
-    expect(askShown(store.getState(), key)).toBeNull();
-    store.getState().closeOverlayTour();
-    expect(askShown(store.getState(), key)).toBe("panel");
-
-    // The column holds one thing: whatever opened last.
-    store.getState().openPeek({ kind: "peek", anchor, content });
-    expect(askShown(store.getState(), key)).toBeNull();
-    store.getState().close();
-    expect(askShown(store.getState(), key)).toBeNull();
-    expect(store.getState().asks).toHaveLength(1);
+      .reportAsk(key, { threadId: "floating", busy: false, presence });
+    store.getState().openAskView(saved("next"), { from: key });
+    expect(placed(store)).toEqual({
+      column: "other",
+      window: "next",
+      onScreen: 2,
+    });
   });
 
-  it("stays open in every view", () => {
+  it("leaves a thread on screen where it is rather than opening it twice", () => {
     const store = createReviewPanelStore();
-    store.getState().openAsk(selection);
-
-    store.getState().showView("diff");
-    expect(askShown(store.getState(), shownAt(store, "docked")!)).toBe("panel");
-  });
-
-  it("pops out over a peek, hides, and docks in place of a peek", () => {
-    const store = createReviewPanelStore();
-    store.getState().openAsk(selection);
-    const key = shownAt(store, "docked")!;
-
-    store.getState().popOutAsk(key);
-    store.getState().openPeek({ kind: "peek", anchor, content });
-    // A window floats over the canvas and keeps showing beside the peek.
-    expect(askShown(store.getState(), key)).toBe("window");
-    expect(store.getState().active).toMatchObject({ kind: "peek" });
-
-    store.getState().hideAsk(key);
-    expect(askShown(store.getState(), key)).toBeNull();
-    expect(store.getState().asks).toHaveLength(1);
-
-    store.getState().dockAsk(key);
-    expect(askShown(store.getState(), key)).toBe("panel");
-    expect(store.getState().active).toBeNull();
-  });
-
-  it("asks in place of an idle Ask, and leaves a working one running off the screen", () => {
-    const store = createReviewPanelStore();
-    store.getState().openAsk(selection);
-    const idle = shownAt(store, "docked")!;
-
-    store.getState().openAsk(selection);
-    const first = shownAt(store, "docked")!;
-    expect(askShown(store.getState(), idle)).toBeNull();
-    expect(store.getState().asks).toHaveLength(1);
-
-    working(store, first);
-    store.getState().openAsk(selection);
-    const second = shownAt(store, "docked")!;
-    expect(second).not.toBe(first);
-    expect(askShown(store.getState(), first)).toBeNull();
-    expect(askShown(store.getState(), second)).toBe("panel");
-
-    store.getState().closeAsk(second);
-    expect(store.getState().asks.map((ask) => ask.key)).toEqual([first]);
-  });
-
-  it("brings an open conversation forward rather than opening it twice", () => {
-    const store = createReviewPanelStore();
-
-    const saved = {
-      type: "saved",
-      threadId: "first",
-      selection,
-      agent: "claude",
-    } as const;
-
-    store.getState().openAskView(saved);
-    const key = shownAt(store, "docked")!;
+    store.getState().openAskView(saved("first"));
+    const key = store.getState().askColumn!;
     working(store, key, "first");
-    store.getState().hideAsk(key);
+    store.getState().popOutAsk(key);
 
-    store.getState().openAskView({ type: "history" });
-    store.getState().openAskView(saved);
-    expect(shownAt(store, "docked")).toBe(key);
-    expect(store.getState().asks).toHaveLength(2);
+    store.getState().openAskView(saved("first"));
+    expect(placed(store)).toEqual({
+      column: null,
+      window: "first",
+      onScreen: 1,
+    });
 
     // Asked from itself, as to reconnect, it opens afresh in its place.
-    store.getState().openAskView(saved, { from: key, replace: true });
-    expect(shownAt(store, "docked")).not.toBe(key);
+    store.getState().dockAsk(key);
+    store.getState().openAskView(saved("first"), { from: key, replace: true });
+    expect(store.getState().askColumn).not.toBe(key);
     expect(askShown(store.getState(), key)).toBeNull();
-    expect(store.getState().asks).toHaveLength(2);
+    expect(placed(store)).toEqual({
+      column: "first",
+      window: null,
+      onScreen: 1,
+    });
   });
 });
 
