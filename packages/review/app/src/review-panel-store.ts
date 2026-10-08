@@ -33,8 +33,7 @@ export interface ReviewPanelState {
   askWindow: number | null;
   /** Where the next Ask opens: where the last one was shown. */
   askPlace: AskPlace;
-  /** Where the window and the pills were dragged to; until then, the
-   * bottom right. */
+  /** Where the window was dragged to; until then, the bottom right. */
   askAnchor: AskAnchor | null;
   /** How big the window was made; until then, as wide as the docked panel. */
   askSize: AskSize | null;
@@ -113,10 +112,10 @@ export interface ReviewPanelActions {
   popOutAsk: (key: number) => void;
   /** Puts an Ask in the side panel, in place of any peek. */
   dockAsk: (key: number) => void;
-  minimizeAsk: (key: number) => void;
-  /** A pill opens its Ask in the window. */
-  restoreAsk: (key: number) => void;
-  /** Moves the window and the pills together, resizing the window too. */
+  /** Takes an Ask off the screen. It stays open, and its agent runs on;
+   * the Threads tab brings it back. */
+  hideAsk: (key: number) => void;
+  /** Moves the window, resizing it too. */
   placeAsk: (anchor: AskAnchor, size?: AskSize) => void;
 }
 
@@ -225,7 +224,7 @@ export function createReviewPanelStore({
     const ask = newAsk(nextAskKey++, view);
 
     return {
-      // An Ask whose agent works is minimized, never replaced.
+      // An Ask whose agent works leaves the screen, never replaced.
       asks:
         occupant && (!occupant.busy || (replace && occupant.key === from))
           ? state.asks.map((each) => (each === occupant ? ask : each))
@@ -292,9 +291,7 @@ export function createReviewPanelStore({
       set((state) => ({ ...showAt(state, key, "window"), motion: "live" })),
     dockAsk: (key) =>
       set((state) => ({ ...showAt(state, key, "docked"), motion: "live" })),
-    minimizeAsk: (key) => set((state) => unplaced(state, key)),
-    restoreAsk: (key) =>
-      set((state) => ({ ...showAt(state, key, "window"), motion: "live" })),
+    hideAsk: (key) => set((state) => unplaced(state, key)),
     placeAsk: (askAnchor, askSize) =>
       set(askSize ? { askAnchor, askSize } : { askAnchor }),
     showView: (next) => set((state) => viewTransition(state, next)),
@@ -378,15 +375,14 @@ export function createReviewPanelStore({
 type AskShownState = ReviewPanelState &
   Pick<ReviewNavigationState, "overlayTour">;
 
-/** How the Ask with this key shows now, if it is open. */
+/** How the Ask with this key shows now, if it shows: a peek or a
+ * fullscreen diagram covers a docked Ask until it closes. */
 export function askShown(state: AskShownState, key: number): AskShown | null {
-  if (!state.asks.some((ask) => ask.key === key)) return null;
-
   if (key === state.askWindow) return "window";
 
-  if (key !== state.askDocked) return "pill";
-
-  return state.active || state.overlayTour ? "pill" : "panel";
+  return key === state.askDocked && !state.active && !state.overlayTour
+    ? "panel"
+    : null;
 }
 
 /** Whether an Ask fills the side panel. */
@@ -396,16 +392,7 @@ export function askDockedShown(state: AskShownState): boolean {
   );
 }
 
-/** The Asks that show as pills, oldest first. */
-export function askPills(state: AskShownState): AskPanel[] {
-  return state.asks.filter((ask) => askShown(state, ask.key) === "pill");
-}
-
-const historyPresence: AskPresence = {
-  agentName: "Ask",
-  status: "Conversations",
-  tone: "quiet",
-};
+const historyPresence: AskPresence = { agentName: "Ask" };
 
 function newAsk(key: number, view: AskView): AskPanel {
   return {
@@ -417,12 +404,7 @@ function newAsk(key: number, view: AskView): AskPanel {
     presence:
       view.type === "history"
         ? historyPresence
-        : {
-            agent: view.agent,
-            agentName: "Ask",
-            status: view.type === "saved" ? "Connecting…" : "New question",
-            tone: "quiet",
-          },
+        : { agent: view.agent, agentName: "Ask" },
   };
 }
 
@@ -447,8 +429,8 @@ function placeOf(state: ReviewPanelState, key: number): AskPlace | null {
   return null;
 }
 
-/** Shows an open Ask in a place; the one there becomes a pill. Docked, it
- * takes the peek's place. */
+/** Shows an open Ask in a place; the one there leaves the screen. Docked,
+ * it takes the peek's place. */
 function showAt(
   state: ReviewPanelState,
   key: number,
@@ -470,7 +452,7 @@ function showAt(
       };
 }
 
-/** Takes an Ask out of the side panel or the window, leaving its pill. */
+/** Takes an Ask out of the side panel or the window. */
 function unplaced(
   state: ReviewPanelState,
   key: number,
@@ -486,9 +468,7 @@ function sameReport(ask: AskPanel, report: AskReport) {
     ask.threadId === report.threadId &&
     ask.busy === report.busy &&
     ask.presence.agent === report.presence.agent &&
-    ask.presence.agentName === report.presence.agentName &&
-    ask.presence.status === report.presence.status &&
-    ask.presence.tone === report.presence.tone
+    ask.presence.agentName === report.presence.agentName
   );
 }
 
