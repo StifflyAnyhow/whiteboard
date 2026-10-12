@@ -38,6 +38,11 @@ import {
 } from "./authoring-cursor";
 import { SaveMarkdown } from "./blocks";
 import { BoardCommitsContext } from "./board-commits";
+import {
+  BoardEditor,
+  type BoardEditorHost,
+  BoardEditorHostContext,
+} from "./board-editor/BoardEditor";
 import { CanvasQueryProvider } from "./canvas-query";
 import { DisplayedReviewVersionContext } from "./displayed-review-version-context";
 import { DrawQueueProvider } from "./draw-queue-provider";
@@ -49,6 +54,7 @@ import {
 } from "./host/review-session";
 import { ReviewDocumentBoundary } from "./review-document-boundary";
 import { reportReviewDocumentRenderError } from "./review-document-error-report";
+import type { ReviewTocEntry } from "./review-document-headings";
 import type { ReviewFindHost } from "./review-find";
 import { ReviewLensesProvider } from "./review-lenses";
 import { ReviewPanelProvider } from "./review-panel";
@@ -69,6 +75,7 @@ function DocumentBody() {
   const data = useContext(DocumentData)!;
   const session = useReviewSession();
   const softwareMapEnabled = useContext(MapEnabled);
+  const editing = useContext(BoardEditorHostContext) !== null;
 
   // App keys its boundary on the review id; this one recovers on the next version.
   return (
@@ -79,7 +86,11 @@ function DocumentBody() {
         reportReviewDocumentRenderError(session, error)
       }
     >
-      <ApiDocument data={data} softwareMapEnabled={softwareMapEnabled} />
+      {editing ? (
+        <BoardEditor data={data} softwareMapEnabled={softwareMapEnabled} />
+      ) : (
+        <ApiDocument data={data} softwareMapEnabled={softwareMapEnabled} />
+      )}
     </ReviewDocumentBoundary>
   );
 }
@@ -393,6 +404,14 @@ export function ApiCanvas({
     [client, content.reviewId, editable],
   );
 
+  // The board editor's Contents, as the person types.
+  const [editorToc, setEditorToc] = useState<ReviewTocEntry[]>();
+
+  const editorHost = useMemo<BoardEditorHost | null>(
+    () => (editable ? { client, setHeadings: setEditorToc } : null),
+    [client, editable],
+  );
+
   useEffect(() => {
     if (data) content.bridge.ready();
   }, [Boolean(data), content.bridge]);
@@ -535,14 +554,21 @@ export function ApiCanvas({
                                 >
                                   <SaveMarkdown.Provider value={saveMarkdown}>
                                     <div {...stylex.props(styles.canvasFrame)}>
-                                      <CanvasDocument
-                                        data={data}
-                                        findHost={findHost}
-                                        softwareMapEnabled={
-                                          content.softwareMapEnabled === true
-                                        }
-                                        documentWidth={content.documentWidth}
-                                      />
+                                      <BoardEditorHostContext.Provider
+                                        value={editorHost}
+                                      >
+                                        <CanvasDocument
+                                          data={data}
+                                          findHost={findHost}
+                                          softwareMapEnabled={
+                                            content.softwareMapEnabled === true
+                                          }
+                                          documentWidth={content.documentWidth}
+                                          tocEntries={
+                                            editorHost ? editorToc : undefined
+                                          }
+                                        />
+                                      </BoardEditorHostContext.Provider>
                                     </div>
                                   </SaveMarkdown.Provider>
                                 </MapEnabled.Provider>
@@ -569,11 +595,14 @@ const CanvasDocument = memo(function CanvasDocument({
   findHost,
   softwareMapEnabled,
   documentWidth,
+  tocEntries,
 }: {
   data: ApiDocumentData;
   findHost?: ReviewFindHost;
   softwareMapEnabled: boolean;
   documentWidth?: ReviewDocumentWidthChoice;
+  /** The editor's Contents, when the board is being edited. */
+  tocEntries?: ReviewTocEntry[];
 }) {
   const snapshot = data.snapshot;
 
@@ -584,7 +613,7 @@ const CanvasDocument = memo(function CanvasDocument({
     documentSoftwareModels: [...data.maps.values()],
     anchors: data.anchors,
     render: DocumentBody,
-    tocEntries: data.headings.entries,
+    tocEntries: tocEntries ?? data.headings.entries,
     empty: snapshot.document.length === 0,
     header: true,
     databaseLens: elements(snapshot.document).some(
