@@ -7,6 +7,8 @@ import type {
   ReviewCanvasUi,
   ReviewDeleteConfirmationProps,
   ReviewDisposable,
+  ReviewSidebarSectionHandle,
+  ReviewSidebarSectionProps,
 } from "@dev.fast/review-protocol";
 import * as stylex from "@stylexjs/stylex";
 import type { ReactElement } from "react";
@@ -20,6 +22,7 @@ import { ReviewHome } from "./review-home-view";
 import { ReviewContainerProvider } from "./review-root-context";
 import { SettingsPage } from "./settings-page";
 import { shellStyles } from "./shell-styles";
+import { ReviewSidebarSection } from "./sidebar-sections";
 import { themeStyles } from "./theme-styles";
 import { tokens } from "./tokens.stylex";
 import { WelcomePage } from "./welcome-page";
@@ -63,8 +66,8 @@ function ReviewCanvas({
     return (
       <EmptyState
         xstyle={styles.sourceEmpty}
-        title="Select a file in the source tree"
-        message="⌘B toggles the tree"
+        title="No file open"
+        message="Open one from a quote or a link on the board."
       />
     );
   }
@@ -238,6 +241,21 @@ export function mountDeleteConfirmation(
   mounted.render(<DeleteConfirmation {...props} />);
 
   return { dispose: () => mounted.dispose() };
+}
+
+/** Mounts one section's list in Desktop's sidebar. */
+export function mountReviewSidebarSection(
+  container: HTMLElement,
+  props: ReviewSidebarSectionProps,
+): ReviewSidebarSectionHandle {
+  const mounted = mountThemed(container);
+
+  mounted.render(<ReviewSidebarSection {...props} />);
+
+  return {
+    update: (next) => mounted.render(<ReviewSidebarSection {...next} />),
+    dispose: () => mounted.dispose(),
+  };
 }
 
 export function mountReviewCanvas(

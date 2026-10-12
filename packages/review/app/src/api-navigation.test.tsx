@@ -1,3 +1,4 @@
+import type { ReviewCanvasBridge } from "@dev.fast/review-protocol";
 // @vitest-environment jsdom
 import { createReviewApi } from "@review/review-api/http";
 import { ReviewStore } from "@review/review-api/store";
@@ -105,11 +106,22 @@ it("exposes JSON section and Markdown headings plus imported PR and stack naviga
   app.get("/reviews-api/:id/commits", (c) => c.json([]));
   const post = vi.fn<() => Promise<{ ok: true }>>(async () => ({ ok: true }));
 
+  const reportSidebar =
+    vi.fn<NonNullable<ReviewCanvasBridge["reportSidebar"]>>();
+
+  const listeners = new Set<Parameters<ReviewCanvasBridge["subscribe"]>[0]>();
+
   const bridge = testReviewBridge(
     {},
     {
       request: async (url, init) => app.request(url, init),
       post,
+      reportSidebar,
+      subscribe: (listener) => {
+        listeners.add(listener);
+
+        return { dispose: () => void listeners.delete(listener) };
+      },
       diffView: {
         files: async () => [],
         create: () => {
@@ -148,27 +160,23 @@ it("exposes JSON section and Markdown headings plus imported PR and stack naviga
     "details-2",
   ]);
 
-  const contents = container.querySelector<HTMLButtonElement>(
-    '[aria-controls="review-toc-body"]',
-  )!;
+  // Desktop's sidebar lists them in Contents, and scrolls the canvas to one.
+  const { contents } = reportSidebar.mock.lastCall![0];
 
-  expect(contents).toBeTruthy();
-  await act(async () => contents.click());
-
-  const links = [
-    ...container.querySelectorAll<HTMLButtonElement>("#review-toc li > button"),
-  ];
-
-  expect(
-    links.map((link) => link.querySelector("span:last-child")?.textContent),
-  ).toEqual(headings.map((heading) => heading.textContent));
+  expect(contents.map((entry) => entry.text)).toEqual(
+    headings.map((heading) => heading.textContent),
+  );
   const scroll = vi.fn<() => void>();
   container.querySelectorAll<HTMLElement>("*").forEach((element) => {
     element.scrollTo = scroll;
     element.scrollIntoView = scroll;
   });
 
-  for (const link of links) await act(async () => link.click());
+  for (const { id } of contents)
+    await act(async () => {
+      for (const listener of listeners)
+        listener({ event: "revealHeading", reviewId, headingId: id });
+    });
   expect(scroll).toHaveBeenCalledTimes(4);
   expect(
     container.querySelector('[aria-label="Pull request stack, 2 of 2"]'),

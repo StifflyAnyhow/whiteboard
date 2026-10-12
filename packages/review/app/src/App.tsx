@@ -41,6 +41,7 @@ import {
   useReviewDebugSettings,
 } from "./debug-settings";
 import { DiffLayoutControl } from "./diff-layout-control";
+import { DocumentContentsContext } from "./diff-sidebar-folds";
 import { ReviewDiffView } from "./DiffView";
 import { useDocumentEmbedScroll } from "./document-embed-scroll";
 import { documentStyles } from "./document-styles";
@@ -72,7 +73,11 @@ import {
   ReviewFindProvider,
   useReviewFindRegistration,
 } from "./review-find";
-import { scrollToReviewBlock } from "./review-heading-scroll";
+import {
+  scrollToReviewBlock,
+  scrollToReviewHeading,
+  useHeadingInView,
+} from "./review-heading-scroll";
 import { useReviewLenses } from "./review-lenses";
 import {
   useReviewPanel,
@@ -82,7 +87,6 @@ import {
 import { type ReviewDiffScope, askDockedShown } from "./review-panel-store";
 import { ReviewRootsProvider, useReviewContainer } from "./review-root-context";
 import { ReviewStackSelector } from "./review-stack-selector";
-import { ReviewToc } from "./review-toc";
 import { offeredReviewViews, reviewViewLabel } from "./review-view-route";
 import { useReviewViewStateSync } from "./review-view-state";
 import { ReviewCommitsView } from "./ReviewCommitsView";
@@ -444,12 +448,96 @@ function ReviewLayoutContent({
 
   const tocEntries = document.tocEntries ?? [];
 
+  // The Diff view's folded Contents opens the document at a heading.
+  const documentContents = useMemo(
+    () => ({
+      entries: tocEntries,
+      open: (headingId: string) => {
+        panelStore.getState().showView("review");
+        revealWhenDrawn(() =>
+          scrollToReviewHeading(
+            headingId,
+            articleRef.current,
+            scrollRegionRef.current,
+          ),
+        );
+      },
+    }),
+    [tocEntries, panelStore, articleRef, scrollRegionRef],
+  );
+
+  // Report headings, the view, and change counts to Desktop's sidebar.
+  const activeHeading = useHeadingInView(
+    tocEntries,
+    articleRef,
+    scrollRegionRef,
+    activeView === "review",
+  );
+
+  const lensStats = lenses?.progress ? lenses.stats() : undefined;
+
+  // A first report before the change's counts load would hide Lenses and
+  // Files until they do; the sidebar keeps the board's last report meanwhile.
+  const sidebarReady =
+    !hasChangeRange ||
+    !lenses ||
+    !!lenses.error ||
+    (lensStats !== undefined && filesTabFileCount !== null);
+
+  useEffect(() => {
+    if (!sidebarReady) return;
+    session.bridge.reportSidebar?.({
+      contents: tocEntries,
+      view: activeView,
+      ...(activeHeading && { activeHeading }),
+      ...(hasChangeRange && lenses && { lenses: lenses.authored.length }),
+      ...(hasChangeRange &&
+        filesTabFileCount !== null &&
+        lensStats && {
+          files: {
+            count: filesTabFileCount,
+            additions: lensStats.total.additions,
+            deletions: lensStats.total.deletions,
+            ...(lenses?.progress?.untrackedFiles && {
+              untracked: lenses.progress.untrackedFiles,
+            }),
+          },
+        }),
+    });
+  }, [
+    session.bridge,
+    sidebarReady,
+    tocEntries,
+    activeView,
+    activeHeading,
+    hasChangeRange,
+    lenses,
+    filesTabFileCount,
+    lensStats?.total.additions,
+    lensStats?.total.deletions,
+    lenses?.progress?.untrackedFiles,
+  ]);
+
   // Subscribe before the canvas signals ready so a reveal immediately after
   // mounting cannot outrun the listener.
   useLayoutEffect(() => {
     let stopReveal: (() => void) | undefined;
 
     const unsubscribe = session.surface.subscribe((event) => {
+      if (event.event === "revealHeading") {
+        stopReveal?.();
+        panelStore.getState().showView("review");
+        stopReveal = revealWhenDrawn(() =>
+          scrollToReviewHeading(
+            event.headingId,
+            articleRef.current,
+            scrollRegionRef.current,
+          ),
+        );
+
+        return;
+      }
+
       if (event.event === "revealBlock") {
         stopReveal?.();
         panelStore.getState().showView("review");
@@ -692,13 +780,6 @@ function ReviewLayoutContent({
             </div>
           </header>
           {banner}
-          {activeView === "review" && (
-            <ReviewToc
-              entries={tocEntries}
-              besideHeader={document.header}
-              documentWidth={document.width}
-            />
-          )}
           <section
             ref={scrollRegionRef}
             {...withClass(
@@ -803,7 +884,11 @@ function ReviewLayoutContent({
               )}
               style={frozenDiffStyle}
             >
-              {diffOpened && <ReviewDiffView />}
+              {diffOpened && (
+                <DocumentContentsContext.Provider value={documentContents}>
+                  <ReviewDiffView />
+                </DocumentContentsContext.Provider>
+              )}
             </div>
             {activeView === "diff" && diffScope !== null && (
               <div
