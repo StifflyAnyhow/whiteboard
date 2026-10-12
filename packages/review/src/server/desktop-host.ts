@@ -76,6 +76,8 @@ export async function runDesktopHost(
 
   const local = await openReviewProfile(home, {
     manageWorkspaces: true,
+    // Desktop shows each PR's state beside its board.
+    pullRequestStates: true,
   });
 
   // JSON is the sole user-review store. A failure is surfaced, never replaced

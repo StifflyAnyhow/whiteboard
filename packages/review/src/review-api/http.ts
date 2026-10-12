@@ -278,8 +278,24 @@ export function createReviewApi(
     return snapshot;
   };
 
+  /** Adds a PR board's state, as this host last read it from GitHub. */
+  const withPullRequestState = <
+    Board extends {
+      pullRequestUrl?: string;
+      origin?: { pullRequestUrl?: string };
+    },
+  >(
+    board: Board,
+  ) => {
+    const state = data?.pullRequestState(
+      board.origin?.pullRequestUrl ?? board.pullRequestUrl,
+    );
+
+    return state ? { ...board, pullRequestState: state } : board;
+  };
+
   const catalog = (mode: "structural" | "textual" = "structural") => [
-    ...store.list(mode),
+    ...store.list(mode).map(withPullRequestState),
     ...(shared?.list(mode) ?? []),
   ];
 
@@ -576,6 +592,21 @@ export function createReviewApi(
 
               if (marked) notify();
             }),
+            // A linked PR's state shows on its link.
+            data?.subscribePullRequestStates(() => {
+              let marked = false;
+
+              for (const { reviewId } of subscriptions)
+                if (reviewId !== null) {
+                  linksRevision.set(
+                    reviewId,
+                    (linksRevision.get(reviewId) ?? 0) + 1,
+                  );
+                  marked = mark(reviewId) || marked;
+                }
+
+              if (marked) notify();
+            }) ?? (() => {}),
             store.activity.subscribe((id) => {
               if (mark(id)) notify();
             }),
@@ -614,11 +645,13 @@ export function createReviewApi(
         const local = store.subscribeCatalog(notify);
         const activity = store.activity.subscribeWorking(notify);
         const imported = shared?.subscribe(notify);
+        const pullRequests = data?.subscribePullRequestStates(notify);
 
         return () => {
           local();
           activity();
           imported?.();
+          pullRequests?.();
         };
       },
     );
@@ -1728,7 +1761,12 @@ export function createReviewApi(
       .pick({ version: true })
       .parse({ version: context.req.query("version") });
 
-    return context.json(store.links(id, version));
+    const { outgoing, backlinks } = store.links(id, version);
+
+    return context.json({
+      outgoing: outgoing.map(withPullRequestState),
+      backlinks: backlinks.map(withPullRequestState),
+    });
   });
   app.get("/:id/place", (context) => {
     const id = context.req.param("id");

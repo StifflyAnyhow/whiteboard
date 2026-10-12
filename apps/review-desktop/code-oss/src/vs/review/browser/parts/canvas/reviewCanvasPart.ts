@@ -54,7 +54,7 @@ import {
 	REVIEW_STRUCTURAL_DIFF_SETTING,
 	REVIEW_TELEMETRY_SETTING,
 } from "../../../common/reviewConfigurationDefaults.js";
-import { ReviewApiClient, type ReviewApiSummary, resolveReviewSourceView, reviewSourceAnchor, type ReviewSourceView, type ReviewSourceSelection } from "../../../common/reviewProtocol.js";
+import { boardIconKind, ReviewApiClient, type ReviewApiSummary, resolveReviewSourceView, reviewSourceAnchor, type ReviewSourceView, type ReviewSourceSelection } from "../../../common/reviewProtocol.js";
 import type {
 	ReviewCanvasBridge,
 	ReviewCanvasContent,
@@ -1202,9 +1202,11 @@ export class ReviewCanvasEditorPane extends EditorPane {
 	 * confirmation, leaving out the boards asked about. Either is empty when
 	 * it can't be read. */
 	private async namedOnDelete(reviewIds: readonly string[]): Promise<ReviewDeleteNamed> {
-		const listed = ({ title, pullRequestNumber }: ReviewDeleteListedBoard): ReviewDeleteListedBoard => ({
+		const listed = ({ title, icon, pullRequestNumber, pullRequestState }: ReviewDeleteListedBoard): ReviewDeleteListedBoard => ({
 			title,
+			...(icon && { icon }),
 			...(pullRequestNumber && { pullRequestNumber }),
+			...(pullRequestState && { pullRequestState }),
 		});
 		const asked = new Set(reviewIds);
 		const client = new ReviewApiClient(await this.desktopConnection.getConnection());
@@ -1222,7 +1224,7 @@ export class ReviewCanvasEditorPane extends EditorPane {
 					const byId = new Map(boards.map((board) => [board.reviewId, board]));
 					return reviewIds.flatMap((reviewId) => byId.get(reviewId)?.children ?? []).flatMap((id) => {
 						const child = byId.get(id);
-						return child && !asked.has(id) ? [listed({ ...child, pullRequestNumber: child.origin?.pullRequestNumber })] : [];
+						return child && !asked.has(id) ? [listed({ ...child, icon: boardIconKind(child.target), pullRequestNumber: child.origin?.pullRequestNumber })] : [];
 					});
 				})
 				.catch((error) => {

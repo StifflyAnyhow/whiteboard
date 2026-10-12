@@ -4,6 +4,7 @@ import {
   type ReviewCanvasInstallContent,
   type ReviewCanvasOnboarding,
   type ReviewCanvasSetupActions,
+  boardIconKind,
 } from "@dev.fast/review-protocol";
 import { fuzzySegments } from "@review/fuzzy-match";
 import * as stylex from "@stylexjs/stylex";
@@ -20,6 +21,7 @@ import {
   useState,
 } from "react";
 
+import { BoardIcon, PullRequestStateIcon } from "./board-icons";
 import { CopyIcon, copyText } from "./copy-text";
 import { homeStyles } from "./home-styles";
 import { CanvasUiContext } from "./host/canvas-ui";
@@ -1327,14 +1329,16 @@ export function ReviewHome({
                             toggleRow(review.reviewId, range)
                           }
                         />
+                        {/* A PR's state, else the board's target. */}
                         <span {...stylex.props(styles.kindIcon)}>
-                          <HomeIcon
-                            kind={
-                              review.origin?.pullRequestNumber
-                                ? "code"
-                                : "board"
-                            }
-                          />
+                          {review.origin?.pullRequestNumber ? (
+                            <PullRequestStateIcon
+                              number={review.origin.pullRequestNumber}
+                              state={review.pullRequestState}
+                            />
+                          ) : (
+                            <BoardIcon icon={boardIconKind(review.target)} />
+                          )}
                         </span>
                         <button
                           aria-label={`${inTrash ? "Select" : "Open"} ${reviewTitle(review)}`}

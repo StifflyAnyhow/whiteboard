@@ -3,6 +3,7 @@ import type { ReviewDeleteConfirmationProps } from "@dev.fast/review-protocol";
 import * as stylex from "@stylexjs/stylex";
 import { Fragment, type ReactElement, useEffect, useRef } from "react";
 
+import { BoardIcon, PullRequestStateIcon } from "./board-icons";
 import { tokens } from "./tokens.stylex";
 import { surfaceStyles } from "./ui/surface";
 
@@ -74,13 +75,15 @@ export function DeleteConfirmation({
               <ul aria-label={group.label} {...stylex.props(styles.rows)}>
                 {group.boards.map((board, row) => (
                   <li key={row} {...stylex.props(styles.row)}>
+                    <BoardIcon icon={board.icon} />
                     <span {...stylex.props(styles.rowTitle)}>
                       {board.title.trim() || "Untitled whiteboard"}
                     </span>
                     {board.pullRequestNumber ? (
-                      <span {...stylex.props(styles.number)}>
-                        #{board.pullRequestNumber}
-                      </span>
+                      <PullRequestStateIcon
+                        number={board.pullRequestNumber}
+                        state={board.pullRequestState}
+                      />
                     ) : null}
                   </li>
                 ))}
@@ -177,12 +180,6 @@ const styles = stylex.create({
     lineHeight: "18px",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
-  },
-  number: {
-    color: tokens.inkFaint,
-    fontFamily: tokens.fontMono,
-    fontSize: fontSize.small,
-    lineHeight: "14px",
   },
   actions: {
     display: "flex",

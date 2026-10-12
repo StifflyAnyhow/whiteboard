@@ -16,6 +16,8 @@ export const fontSize = stylex.defineConsts({
   editorial: "16px",
   pageTitle: "34px",
   heading: "18px",
+  // A board's title in its link preview.
+  headline: "21px",
   display: "22px",
 });
 
@@ -38,6 +40,8 @@ export const radius = stylex.defineConsts({
   // Popovers, cards and dialogs.
   surface: "8px",
   panel: "10px",
+  // Board link preview cards.
+  card: "10px",
   pill: "999px",
   round: "50%",
 });

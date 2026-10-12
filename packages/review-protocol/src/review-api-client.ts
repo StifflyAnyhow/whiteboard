@@ -1,5 +1,7 @@
 import type { JsonValue } from "@dev.fast/json";
 
+import type { PullRequestState } from "./contracts.js";
+
 /** List metadata for the authenticated local catalog; document contents stay in snapshots. */
 export interface ReviewApiSummary {
   reviewId: string;
@@ -27,6 +29,8 @@ export interface ReviewApiSummary {
     pullRequestUrl?: string;
     revision?: string;
   };
+  /** The PR's state on GitHub, when the host has read it. */
+  pullRequestState?: PullRequestState;
   /** Shared imports have separate local checkouts but retain their remote identity. */
   shared?: { cloneUrl?: string };
   /** The project the board belongs to; absent for a share with no

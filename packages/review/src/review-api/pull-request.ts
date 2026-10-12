@@ -6,6 +6,7 @@ import {
   parseGitRemote,
   runVcs,
 } from "@dev.fast/local-vcs";
+import type { PullRequestState } from "@dev.fast/review-protocol";
 import { errorMessage } from "@dev.fast/trace-core";
 import { z } from "zod";
 
@@ -32,6 +33,7 @@ export interface PullRequestRecord {
   baseRefName: string;
   /** GitHub's base commit, frozen at the PR's last update. */
   baseRefOid?: string;
+  state?: PullRequestState;
 }
 
 const GH_TIMEOUT_MS = 20_000;
@@ -85,7 +87,23 @@ const metadataSchema = z.object({
   title: z.string(),
   baseRefName: z.string().min(1),
   baseRefOid: z.string().optional(),
+  state: z.enum(["OPEN", "CLOSED", "MERGED"]).optional(),
+  isDraft: z.boolean().optional(),
 });
+
+/** gh's state and draft flag as one state. */
+function ghState(
+  state: "OPEN" | "CLOSED" | "MERGED" | undefined,
+  isDraft: boolean | undefined,
+): PullRequestState | undefined {
+  if (state === "MERGED") return "merged";
+
+  if (state === "CLOSED") return "closed";
+
+  if (state === "OPEN") return isDraft ? "draft" : "open";
+
+  return undefined;
+}
 
 /** gh first (it carries the user's auth), then, for github.com only, GitHub's
  * public REST API: Enterprise hosts require gh. */
@@ -106,12 +124,23 @@ export async function readPullRequest(
         "--repo",
         { value: `${host}/${slug}` },
         "--json",
-        "number,title,baseRefName,baseRefOid",
+        "number,title,baseRefName,baseRefOid,state,isDraft",
       ],
       { timeoutMs: GH_TIMEOUT_MS },
     );
 
-    return { host, slug, ...metadataSchema.parse(JSON.parse(stdout)) };
+    const { state, isDraft, ...metadata } = metadataSchema.parse(
+      JSON.parse(stdout),
+    );
+
+    const pullRequestState = ghState(state, isDraft);
+
+    return {
+      host,
+      slug,
+      ...metadata,
+      ...(pullRequestState && { state: pullRequestState }),
+    };
   } catch (error) {
     ghFailure = firstLine(errorMessage(error));
   }
@@ -149,15 +178,21 @@ export async function readPullRequest(
       404,
     );
 
-  if (response.status === 403 || response.status === 429)
-    throw unreadable(
-      url,
-      ghFailure,
-      response.headers.get("x-ratelimit-remaining") === "0" ||
-        response.status === 429
-        ? "the unauthenticated GitHub API rate limit is exhausted"
-        : "the GitHub API refused the request",
+  if (response.status === 403 || response.status === 429) {
+    const reset = Number(response.headers.get("x-ratelimit-reset"));
+
+    throw new GitHubRefusedRead(
+      unreadable(
+        url,
+        ghFailure,
+        response.headers.get("x-ratelimit-remaining") === "0" ||
+          response.status === 429
+          ? "the unauthenticated GitHub API rate limit is exhausted"
+          : "the GitHub API refused the request",
+      ).message,
+      reset > 0 ? reset * 1000 : Date.now() + 15 * 60_000,
     );
+  }
 
   if (!response.ok)
     throw unreadable(
@@ -171,6 +206,9 @@ export async function readPullRequest(
       number: z.number(),
       title: z.string(),
       base: z.object({ ref: z.string().min(1), sha: z.string() }),
+      state: z.enum(["open", "closed"]).optional(),
+      draft: z.boolean().optional(),
+      merged_at: z.string().nullable().optional(),
     })
     .safeParse(await response.json().catch(() => undefined));
 
@@ -184,6 +222,15 @@ export async function readPullRequest(
     title: parsed.data.title,
     baseRefName: parsed.data.base.ref,
     baseRefOid: parsed.data.base.sha,
+    ...(parsed.data.state && {
+      state: parsed.data.merged_at
+        ? "merged"
+        : parsed.data.state === "closed"
+          ? "closed"
+          : parsed.data.draft
+            ? "draft"
+            : "open",
+    }),
   };
 }
 
@@ -256,6 +303,7 @@ export async function fetchPullRequest(
   deps: PullRequestDeps,
 ): Promise<{ head: string; base: string }> {
   const { pullRequest: pr } = input;
+
   const refs = pullRequestRefs(pr);
 
   const git = (args: VcsArg[], timeoutMs = LOCAL_TIMEOUT_MS) =>
@@ -386,6 +434,17 @@ async function indexForJj(
     for (const tag of tags)
       await git(["update-ref", "-d", tag]).catch(() => undefined);
     await jjImport().catch(() => undefined);
+  }
+}
+
+/** GitHub refused a read, as it does past a rate limit; it takes reads
+ * again at `retryAt`. */
+export class GitHubRefusedRead extends ReviewInputError {
+  constructor(
+    message: string,
+    readonly retryAt: number,
+  ) {
+    super(message, 409);
   }
 }
 

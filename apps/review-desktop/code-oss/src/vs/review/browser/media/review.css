@@ -1512,3 +1512,13 @@ body
   background: color-mix(in srgb, var(--vscode-editor-background) 70%, transparent);
 }
 .review-workbench .monaco-editor .review-fold-pill.is-viewed:not(.is-target) { opacity: .65; }
+
+/* A board tab draws the canvas's icon for its board (set as a mask by the
+   board tabs contribution) in the codicon's slot. */
+.monaco-workbench .tab .monaco-icon-label.review-board-icon::before {
+  content: "" !important;
+  width: 16px;
+  background-color: currentColor;
+  -webkit-mask: var(--review-board-icon) center / 14px 14px no-repeat;
+  mask: var(--review-board-icon) center / 14px 14px no-repeat;
+}

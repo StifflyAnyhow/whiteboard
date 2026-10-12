@@ -2151,6 +2151,56 @@ describe("snapshot authoring", () => {
     }
   });
 
+  it("redraws a link's icon when the board it links to is retargeted", async () => {
+    const plan = await create();
+    const pr = await create();
+
+    await edit(pr.reviewId, {
+      type: "insert",
+      content: {
+        type: "markdown",
+        markdown: `See [the plan](whiteboard:board/${plan.reviewId}).`,
+      },
+    });
+
+    const api = createReviewApi(store);
+
+    const icon = async () =>
+      (
+        (await (await api.request(`/${pr.reviewId}/links`)).json()) as {
+          outgoing: { icon?: string }[];
+        }
+      ).outgoing[0]!.icon;
+
+    expect(await icon()).toBe("code");
+
+    const checkout = path.join(directory, "checkout");
+    mkdirSync(checkout);
+    const { id: repositoryId } = store.registerRepository(checkout);
+
+    const watch = await api.request(
+      `/watch?subscriptions=${encodeURIComponent(JSON.stringify([{ reviewId: pr.reviewId, mode: "textual" }]))}`,
+    );
+
+    const reader = watch.body!.pipeThrough(new TextDecoderStream()).getReader();
+
+    try {
+      await reader.read();
+      await store.execute(
+        request({
+          type: "set_target",
+          reviewId: plan.reviewId,
+          target: { kind: "project", repositoryId },
+        }),
+      );
+      // The linking board is sent again, so it reads its links again.
+      expect((await reader.read()).value).toContain('"linksRevision":1');
+      expect(await icon()).toBe("board");
+    } finally {
+      await reader.cancel();
+    }
+  });
+
   it("links boards to existing boards and blocks, and indexes the links both ways", async () => {
     const plan = await create();
 
