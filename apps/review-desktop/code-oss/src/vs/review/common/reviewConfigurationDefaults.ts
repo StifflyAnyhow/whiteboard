@@ -28,8 +28,6 @@ export const REVIEW_STRUCTURAL_DIFF_SETTING = 'review.experimental.structuralDif
 export const REVIEW_SOFTWARE_MAP_SETTING = 'review.experimental.softwareMap.enabled';
 export const REVIEW_KEYMAPS = ['none', 'vim', 'emacs', 'sublime'] as const;
 export type ReviewKeymap = typeof REVIEW_KEYMAPS[number];
-export const REVIEW_CTRL_TAB_SETTING = 'review.tabs.ctrlTab';
-export const REVIEW_CTRL_TAB_CHOICES = ['recent', 'next'] as const;
 export const REVIEW_READY_NOTIFICATION_SETTING = 'review.notifications.reviewReady';
 export const REVIEW_READY_NOTIFICATION_CHOICES = ['notificationAndBadge', 'notification', 'off'] as const;
 export const REVIEW_DOCUMENT_WIDTH_SETTING = 'review.documentWidth';
@@ -59,7 +57,7 @@ export const reviewConfigurationDefaults = {
 	'window.commandCenter': false,
 	'workbench.navigationControl.enabled': true,
 	'window.menuBarVisibility': 'hidden',
-	'workbench.editor.showTabs': 'multiple',
+	'workbench.editor.showTabs': 'none',
 	'workbench.editor.editorActionsLocation': 'hidden',
 	// Reduce tab widths when the row fills. The native tab control truncates the
 	// labels first. It keeps horizontal scrolling after tabs reach their minimum.

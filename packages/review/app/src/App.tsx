@@ -89,7 +89,11 @@ import {
   useReviewPanelStore,
   useSuppressPanelMotionOnCanvasResume,
 } from "./review-panel";
-import { type ReviewDiffScope, askColumnShown } from "./review-panel-store";
+import {
+  type ReviewDiffScope,
+  askColumnShown,
+  peekShown,
+} from "./review-panel-store";
 import { ReviewRootsProvider, useReviewContainer } from "./review-root-context";
 import { offeredReviewViews, reviewViewLabel } from "./review-view-route";
 import { useReviewViewStateSync } from "./review-view-state";
@@ -343,7 +347,7 @@ function ReviewLayoutContent({
   const sourceTreeTooltip = useTooltip("Open full read-only source");
   const panelStore = useReviewPanelStore();
   useSuppressPanelMotionOnCanvasResume(appRef);
-  const activePanel = useReviewPanel((state) => state.active);
+  const peekOpen = useReviewPanel(peekShown);
 
   // In Desktop, a docked Ask has a panel of its own beside the board.
   const askBeside = !useAskPanelHost();
@@ -388,7 +392,7 @@ function ReviewLayoutContent({
   const debugSettings = useReviewDebugSettings();
 
   // In Desktop the column right of the board holds peeks and Ask alike.
-  const rightPanelOpen = askBeside && (activePanel !== null || askDocked);
+  const rightPanelOpen = askBeside && (peekOpen || askDocked);
 
   const sidePeekResize = useRightPanelResize({
     stateKey: "side-peek-width",

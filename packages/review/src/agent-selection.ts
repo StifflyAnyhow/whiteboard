@@ -35,6 +35,8 @@ export const AgentSelectionSchema = z.strictObject({
       startLine: z.number().int().positive(),
       endLine: z.number().int().positive(),
     }),
+    /** The whole board, nothing in it chosen. */
+    z.strictObject({ kind: z.literal("board") }),
   ]),
   title: z.string().max(500),
   detail: z.string().max(24000).optional(),
@@ -54,6 +56,8 @@ export function selectionMarkdown(
 
   if (selection.selectedDiff)
     return selectedDiffMarkdown(selection.selectedDiff, diffPaths);
+
+  if (target.kind === "board") return "";
 
   if (target.kind === "text")
     return target.quote

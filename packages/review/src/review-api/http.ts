@@ -1259,7 +1259,9 @@ export function createReviewApi(
     );
 
     return [
-      `Selected ${target.kind === "text" ? "text" : "code"} from Whiteboard: ${boardTitle(snapshot.title)}`,
+      target.kind === "board"
+        ? `Asked about the whole Whiteboard: ${boardTitle(snapshot.title)}`
+        : `Selected ${target.kind === "text" ? "text" : "code"} from Whiteboard: ${boardTitle(snapshot.title)}`,
       `Session ID: ${snapshot.reviewId}`,
       `Version: ${snapshot.version}`,
       ...(selection.apiSource?.commit

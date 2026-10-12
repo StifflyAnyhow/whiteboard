@@ -232,6 +232,8 @@ function SiblingList({
   onOpen: (id: string, event: OpenEvent) => void;
 }): ReactElement {
   const list = useRef<HTMLDivElement>(null);
+  // Desktop shows one board at a time, so it opens every board in front.
+  const background = useReviewSession().bridge.reportSidebar === undefined;
 
   // A long list opens scrolled to the board on screen.
   useEffect(() => {
@@ -261,7 +263,9 @@ function SiblingList({
               title={
                 here
                   ? undefined
-                  : "Open whiteboard (Cmd/Ctrl-click to open in the background)"
+                  : background
+                    ? "Open whiteboard (Cmd/Ctrl-click to open in the background)"
+                    : "Open whiteboard"
               }
               {...stylex.props(styles.row, here && styles.rowCurrent)}
               onClick={(event) => {

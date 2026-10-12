@@ -663,6 +663,9 @@ export function AskPanelContent({
         inputRef={composer}
         placeholders={askPlaceholders(
           Boolean(threadId || savedThreadId),
+          selection.target.kind === "board"
+            ? "this whiteboard"
+            : "this selection",
           chosen?.name ?? "an agent",
           (thread?.commands ?? offered?.commands)?.length
             ? "/ for commands, @ for files"
@@ -793,14 +796,15 @@ function TooltipLabel({
  * panel or window drops the hint, then shortens the question. */
 function askPlaceholders(
   followUp: boolean,
+  about: string,
   agentName: string,
   hint: string,
 ): string[] {
   if (followUp) return [`Ask a follow-up · ${hint}`, "Ask a follow-up…"];
 
-  const lead = `Ask ${agentName} about this selection`;
+  const lead = `Ask ${agentName} about ${about}`;
 
-  return [`${lead} · ${hint}`, `${lead}…`, "Ask about this selection…"];
+  return [`${lead} · ${hint}`, `${lead}…`, `Ask about ${about}…`];
 }
 
 /** The images sent with a question. Its files show as its @ mentions. */
