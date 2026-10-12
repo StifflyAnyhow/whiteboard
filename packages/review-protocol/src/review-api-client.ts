@@ -45,6 +45,8 @@ export interface ReviewApiSummary {
   } | null;
   viewedAt: string | null;
   trashedAt: string | null;
+  /** A version was saved after viewedAt, or the board was never viewed. */
+  changed?: boolean;
   /** An agent holds a live lease; absent on shared reviews. */
   working?: boolean;
   /** The board this one is nested under; absent at top level. */

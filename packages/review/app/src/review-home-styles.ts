@@ -587,6 +587,8 @@ export const styles = stylex.create({
     },
   },
   kindIcon: {
+    // The changed badge sits on the icon's corner.
+    position: "relative",
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",

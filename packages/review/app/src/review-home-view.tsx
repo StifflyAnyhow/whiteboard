@@ -22,6 +22,7 @@ import {
 } from "react";
 
 import { BoardIcon, PullRequestStateIcon } from "./board-icons";
+import { ChangedBadge } from "./changed-badge";
 import { CopyIcon, copyText } from "./copy-text";
 import { homeStyles } from "./home-styles";
 import { CanvasUiContext } from "./host/canvas-ui";
@@ -1339,6 +1340,7 @@ export function ReviewHome({
                           ) : (
                             <BoardIcon icon={boardIconKind(review.target)} />
                           )}
+                          {review.changed ? <ChangedBadge onIcon /> : null}
                         </span>
                         <button
                           aria-label={`${inTrash ? "Select" : "Open"} ${reviewTitle(review)}`}
