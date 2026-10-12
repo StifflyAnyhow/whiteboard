@@ -43,6 +43,12 @@ export interface ReviewApiSummary {
   trashedAt: string | null;
   /** An agent holds a live lease; absent on shared reviews. */
   working?: boolean;
+  /** The board this one is nested under; absent at top level. */
+  parentId?: string;
+  /** The boards nested under this one, in sibling order. */
+  children?: string[];
+  /** The boards in its project this one builds on. */
+  dependsOn?: string[];
 }
 
 export interface ReviewSourceEntry {
