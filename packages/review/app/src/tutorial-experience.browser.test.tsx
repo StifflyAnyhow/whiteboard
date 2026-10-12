@@ -289,6 +289,46 @@ describe("TutorialExperience", () => {
     expect(tutorial.setStep).toHaveBeenCalledWith("openDiff", true);
   });
 
+  it("marks a Diff tab outside the canvas for its host, and completes from its click", () => {
+    const tutorial = tutorialBridge(["chooseKeymap", "showHover"]);
+
+    // Desktop's sidebar draws the Diff tab outside the canvas.
+    const sidebarTab = document.createElement("button");
+    sidebarTab.dataset.tourTarget = "diff-tab";
+    sidebarTab.textContent = "Diff";
+    document.body.prepend(sidebarTab);
+
+    render(tutorial);
+
+    expect(sidebarTab.dataset.tourRinged).toBe("openDiff");
+    // Its host rings it; the canvas draws no ring of its own.
+    expect(layerRings()).toHaveLength(0);
+    act(() => sidebarTab.click());
+    expect(tutorial.setStep).toHaveBeenCalledWith("openDiff", true);
+  });
+
+  it("completes the way back to the whiteboard from the sidebar's Whiteboard tab", () => {
+    const tutorial = tutorialBridge([
+      "chooseKeymap",
+      "showHover",
+      "openDiff",
+      "selectLens",
+      "expandFold",
+    ]);
+
+    // Desktop's sidebar draws the Whiteboard tab outside the canvas.
+    const sidebarTab = document.createElement("button");
+    sidebarTab.dataset.tourTarget = "review-tab";
+    sidebarTab.textContent = "Whiteboard";
+    document.body.prepend(sidebarTab);
+
+    render(tutorial);
+
+    expect(sidebarTab.dataset.tourRinged).toBe("backToWhiteboard");
+    act(() => sidebarTab.click());
+    expect(tutorial.setStep).toHaveBeenCalledWith("backToWhiteboard", true);
+  });
+
   it("stays above the sequence tour and completes once the tour moves", async () => {
     const tutorial = tutorialBridge([...THROUGH_DIFFS]);
 

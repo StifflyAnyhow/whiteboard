@@ -1594,7 +1594,7 @@ body
 /* An icon over its label, the count faint after the label. Every tab is the
    same width, set to the widest label with a 3-digit count; the tabs sit at
    the left and what is left over stays on the right. A hidden tab leaves no
-   gap. The sidebar's minimum holds all four. */
+   gap. The sidebar's minimum holds all three. */
 .monaco-workbench .review-sidebar-tab {
   position: relative;
   display: flex;
@@ -1646,6 +1646,13 @@ body
 .monaco-workbench .review-sidebar-tab.active {
   background-color: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
   color: var(--vscode-foreground);
+}
+
+/* The tutorial marks the tab its step points at; the canvas rings only
+   what is inside it. */
+.monaco-workbench .review-sidebar-tab[data-tour-ringed] {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
 }
 
 .monaco-workbench .review-sidebar-tab.active .review-sidebar-tab-label {

@@ -58,6 +58,9 @@ import {
   topbarTabsMarker,
 } from "./markers.stylex";
 import { MissingCheckoutBanner } from "./missing-checkout-banner";
+import { usePageBarFold } from "./page-bar-fold";
+import { type PageMoreFolded, PageMoreMenu } from "./page-more-menu";
+import { ReviewBreadcrumb } from "./review-breadcrumb";
 import { ReviewPanelHost } from "./review-components";
 import {
   ReviewProvider,
@@ -67,6 +70,7 @@ import {
 import { ReviewCornerAction } from "./review-corner-action";
 import { useReviewDiffFiles } from "./review-diff-files-context";
 import { ReviewDiffFilesProvider } from "./review-diff-files-context";
+import { useBoardPlace } from "./review-doc-meta";
 import { ReviewDocumentBoundary } from "./review-document-boundary";
 import { reportReviewDocumentRenderError } from "./review-document-error-report";
 import {
@@ -98,7 +102,7 @@ import {
   motion,
   radius,
 } from "./scale.stylex";
-import { ShareControl } from "./share-control";
+import { ShareControl, useCanShare } from "./share-control";
 import { shellStyles } from "./shell-styles";
 import { useRightPanelResize } from "./side-panel-resizer";
 import { selectActiveSoftwareMapModel } from "./software-map-selection";
@@ -297,6 +301,44 @@ function ReviewLayoutContent({
 }): ReactElement {
   const session = useReviewSession();
   const review = useReview();
+  const place = useBoardPlace();
+  // In Desktop the sidebar's tabs pick the view, and "⋯" holds the rest.
+  const sidebarLeads = session.bridge.reportSidebar !== undefined;
+  const pageBar = useRef<HTMLElement>(null);
+  const fold = usePageBarFold(pageBar, sidebarLeads);
+  const canShare = useCanShare();
+  const share = useRef<{ open(): void }>(null);
+  const bugReport = useRef<{ open(): void }>(null);
+
+  const joinDiscord = () => {
+    captureUiEvent(session, "discord_clicked", { via: "topbar" });
+    session.surface.post({ name: "joinDiscord", args: {} });
+  };
+
+  // Narrowest first out: Share last, after Discord and the bug report.
+  const folded: PageMoreFolded[] = [
+    ...(fold >= 3 && canShare
+      ? [
+          {
+            id: "share",
+            label: "Share…",
+            onSelect: () => share.current?.open(),
+          },
+        ]
+      : []),
+    ...(fold >= 2
+      ? [
+          { id: "discord", label: "Join our Discord", onSelect: joinDiscord },
+          {
+            id: "bug",
+            label: "Report a bug…",
+            idleInTutorial: true,
+            onSelect: () => bugReport.current?.open(),
+          },
+        ]
+      : []),
+  ];
+
   const discordTooltip = useTooltip("Join our Discord community");
   const sourceTreeTooltip = useTooltip("Open full read-only source");
   const panelStore = useReviewPanelStore();
@@ -534,6 +576,9 @@ function ReviewLayoutContent({
     lenses?.progress?.untrackedFiles,
   ]);
 
+  const lensesRef = useRef(lenses);
+  lensesRef.current = lenses;
+
   // Subscribe before the canvas signals ready so a reveal immediately after
   // mounting cannot outrun the listener.
   useLayoutEffect(() => {
@@ -569,16 +614,32 @@ function ReviewLayoutContent({
       }
 
       if (event.event !== "showReviewView") return;
-      const { availableViews, showView } = panelStore.getState();
 
-      if (availableViews.includes(event.view)) showView(event.view);
+      const {
+        availableViews,
+        showView,
+        diffScope: scope,
+      } = panelStore.getState();
+
+      if (!availableViews.includes(event.view)) return;
+
+      // Desktop's sidebar tabs open the diff in place of the strip.
+      if (event.view === "diff" && event.reviewId)
+        captureUiEvent(session, "diff_opened", {
+          kind: diffOpenedKind(
+            scope,
+            Boolean(lensesRef.current?.structuralDiffEnabled),
+          ),
+          via: "sidebar",
+        });
+      showView(event.view);
     });
 
     return () => {
       stopReveal?.();
       unsubscribe();
     };
-  }, [panelStore, session.surface, articleRef, scrollRegionRef]);
+  }, [panelStore, session, articleRef, scrollRegionRef]);
 
   const activeSoftwareMapSource = useMemo(
     () =>
@@ -643,85 +704,111 @@ function ReviewLayoutContent({
           shellRef={shellRef}
           scrollRegionRef={scrollRegionRef}
         >
-          <header {...stylex.props(shellStyles.topbar)}>
-            <div {...stylex.props(shellStyles.topbarLeft, topbarTabsMarker)}>
-              <div
-                {...stylex.props(
-                  controlStyles.segmented,
-                  controlStyles.segmentedTopbar,
-                )}
-                role="group"
-                aria-label="Session views"
-              >
-                {reviewViews.map((view) => (
-                  <button
-                    key={view}
-                    type="button"
-                    aria-label={
-                      view === "map"
-                        ? "Map (Experimental)"
-                        : reviewViewLabel(view)
-                    }
-                    aria-pressed={activeView === view}
-                    data-tour-target={`${view}-tab`}
-                    title={view === "map" ? "Map (Experimental)" : undefined}
-                    {...withClass(
-                      "review-segment",
-                      segmentMarker,
-                      controlStyles.segment,
-                      controlStyles.segmentTopbar,
-                      activeView === view && controlStyles.segmentActive,
-                      activeView === view && controlStyles.segmentTopbarActive,
-                    )}
-                    onClick={() => {
-                      if (view === "diff")
-                        captureUiEvent(session, "diff_opened", {
-                          kind: diffOpenedKind(
-                            diffScope,
-                            Boolean(lenses?.structuralDiffEnabled),
-                          ),
-                          via: "topbar",
-                        });
-                      showView(view);
-                    }}
-                  >
-                    {view === "review" ? (
-                      <ReviewSurfaceLabel
-                        hasContent={document.empty === false}
-                        active={activeView === "review"}
-                      />
-                    ) : (
-                      <span>{reviewViewLabel(view)}</span>
-                    )}
-                    {view === "diff" && filesTabFileCount !== null && (
-                      <span
-                        {...stylex.props(
-                          controlStyles.segmentCount,
-                          activeView === view &&
-                            controlStyles.segmentCountActive,
-                        )}
-                      >
-                        {filesTabFileCount}
-                      </span>
-                    )}
-                    {view === "commits" && (
-                      <span
-                        {...stylex.props(
-                          controlStyles.segmentCount,
-                          activeView === view &&
-                            controlStyles.segmentCountActive,
-                        )}
-                      >
-                        {commits.length}
-                      </span>
-                    )}
-                    <MarkerUnderline active={activeView === view} />
-                  </button>
-                ))}
-              </div>
+          <header
+            ref={pageBar}
+            {...stylex.props(
+              shellStyles.topbar,
+              sidebarLeads && shellStyles.pageBar,
+            )}
+          >
+            <div
+              {...stylex.props(
+                shellStyles.topbarLeft,
+                topbarTabsMarker,
+                sidebarLeads && shellStyles.pageBarLeft,
+              )}
+            >
+              {session.review ? (
+                <ReviewBreadcrumb
+                  place={place}
+                  reviewId={session.review.reviewId}
+                  counted={fold < 1}
+                />
+              ) : null}
+              {sidebarLeads ? null : (
+                <div
+                  {...stylex.props(
+                    controlStyles.segmented,
+                    controlStyles.segmentedTopbar,
+                  )}
+                  role="group"
+                  aria-label="Session views"
+                >
+                  {reviewViews.map((view) => (
+                    <button
+                      key={view}
+                      type="button"
+                      aria-label={
+                        view === "map"
+                          ? "Map (Experimental)"
+                          : reviewViewLabel(view)
+                      }
+                      aria-pressed={activeView === view}
+                      data-tour-target={`${view}-tab`}
+                      title={view === "map" ? "Map (Experimental)" : undefined}
+                      {...withClass(
+                        "review-segment",
+                        segmentMarker,
+                        controlStyles.segment,
+                        controlStyles.segmentTopbar,
+                        activeView === view && controlStyles.segmentActive,
+                        activeView === view &&
+                          controlStyles.segmentTopbarActive,
+                      )}
+                      onClick={() => {
+                        if (view === "diff")
+                          captureUiEvent(session, "diff_opened", {
+                            kind: diffOpenedKind(
+                              diffScope,
+                              Boolean(lenses?.structuralDiffEnabled),
+                            ),
+                            via: "topbar",
+                          });
+                        showView(view);
+                      }}
+                    >
+                      {view === "review" ? (
+                        <ReviewSurfaceLabel
+                          hasContent={document.empty === false}
+                          active={activeView === "review"}
+                        />
+                      ) : (
+                        <span>{reviewViewLabel(view)}</span>
+                      )}
+                      {view === "diff" && filesTabFileCount !== null && (
+                        <span
+                          {...stylex.props(
+                            controlStyles.segmentCount,
+                            activeView === view &&
+                              controlStyles.segmentCountActive,
+                          )}
+                        >
+                          {filesTabFileCount}
+                        </span>
+                      )}
+                      {view === "commits" && (
+                        <span
+                          {...stylex.props(
+                            controlStyles.segmentCount,
+                            activeView === view &&
+                              controlStyles.segmentCountActive,
+                          )}
+                        >
+                          {commits.length}
+                        </span>
+                      )}
+                      <MarkerUnderline active={activeView === view} />
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <div
-              {...stylex.props(shellStyles.topbarActions, topbarActionsMarker)}
+              {...stylex.props(
+                shellStyles.topbarActions,
+                topbarActionsMarker,
+                sidebarLeads && shellStyles.pageBarActions,
+              )}
             >
               <div
                 {...stylex.props(
@@ -729,26 +816,28 @@ function ReviewLayoutContent({
                   shellStyles.topbarContext,
                 )}
               >
-                <Button
-                  variant="ghost"
-                  xstyle={shellStyles.openSourceTree}
-                  aria-label="Source tree ↗"
-                  ref={sourceTreeTooltip}
-                  onClick={() => {
-                    captureUiEvent(session, "source_tree_opened", {
-                      via: "topbar",
-                    });
-                    session.surface.post({
-                      name: "openSourceTree",
-                      args: {},
-                    });
-                  }}
-                >
-                  <span {...stylex.props(shellStyles.openSourceTreeLabel)}>
-                    Source tree
-                  </span>
-                  <span aria-hidden="true">↗</span>
-                </Button>
+                {sidebarLeads ? null : (
+                  <Button
+                    variant="ghost"
+                    xstyle={shellStyles.openSourceTree}
+                    aria-label="Source tree ↗"
+                    ref={sourceTreeTooltip}
+                    onClick={() => {
+                      captureUiEvent(session, "source_tree_opened", {
+                        via: "topbar",
+                      });
+                      session.surface.post({
+                        name: "openSourceTree",
+                        args: {},
+                      });
+                    }}
+                  >
+                    <span {...stylex.props(shellStyles.openSourceTreeLabel)}>
+                      Source tree
+                    </span>
+                    <span aria-hidden="true">↗</span>
+                  </Button>
+                )}
                 <AuthoringActivityBadge
                   onLocate={(view) => {
                     if (view === "diff")
@@ -763,34 +852,50 @@ function ReviewLayoutContent({
                   }}
                 />
               </div>
-              <ShareControl />
-              <IconButton
-                xstyle={shellStyles.topbarItem}
-                ref={discordTooltip}
-                aria-label="Join our Discord community"
-                onClick={() => {
-                  captureUiEvent(session, "discord_clicked", {
-                    via: "topbar",
-                  });
-                  session.surface.post({ name: "joinDiscord", args: {} });
-                }}
-              >
-                <DiscordIcon xstyle={controlStyles.chromeIcon} />
-              </IconButton>
-              <BugReportControl />
+              <ShareControl folded={fold >= 3} handle={share} />
+              {fold >= 2 ? null : (
+                <IconButton
+                  xstyle={shellStyles.topbarItem}
+                  ref={discordTooltip}
+                  aria-label="Join our Discord community"
+                  data-page-bar-fold="chat"
+                  onClick={joinDiscord}
+                >
+                  <DiscordIcon xstyle={controlStyles.chromeIcon} />
+                </IconButton>
+              )}
+              <BugReportControl folded={fold >= 2} handle={bugReport} />
               <ReviewBatonChip outcome={review.submissionOutcome} />
               <DiffLayoutControl />
-              {!review.historicalRevision && !review.submissionOutcome && (
-                <div
-                  {...stylex.props(
-                    shellStyles.topbarItem,
-                    shellStyles.actionsDivider,
-                  )}
+              {sidebarLeads ? (
+                <PageMoreMenu
+                  views={reviewViews
+                    .filter((view) => view === "trace" || view === "map")
+                    .map((view) => ({
+                      view,
+                      label:
+                        view === "map"
+                          ? "Map (Experimental)"
+                          : reviewViewLabel(view),
+                    }))}
+                  onShowView={showView}
+                  folded={folded}
                 />
+              ) : (
+                <>
+                  {!review.historicalRevision && !review.submissionOutcome && (
+                    <div
+                      {...stylex.props(
+                        shellStyles.topbarItem,
+                        shellStyles.actionsDivider,
+                      )}
+                    />
+                  )}
+                  {!review.historicalRevision && !review.submissionOutcome ? (
+                    <ReviewCornerAction />
+                  ) : null}
+                </>
               )}
-              {!review.historicalRevision && !review.submissionOutcome ? (
-                <ReviewCornerAction />
-              ) : null}
             </div>
           </header>
           {banner}

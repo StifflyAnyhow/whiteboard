@@ -157,14 +157,16 @@ export function TutorialExperienceProvider({
       if (activeStep.completion === "inline-hover") completeStep(activeStep);
     };
 
-    // Monaco acts on pointer down.
-    root.addEventListener("pointerdown", onClick, true);
-    root.addEventListener("click", onClick, true);
+    // Monaco acts on pointer down. A target can sit outside the canvas, as
+    // Desktop's sidebar tabs do, so clicks are heard document-wide.
+    const page = root.ownerDocument;
+    page.addEventListener("pointerdown", onClick, true);
+    page.addEventListener("click", onClick, true);
     root.addEventListener(INLINE_HOVER_EVENT, onInlineHover);
 
     return () => {
-      root.removeEventListener("pointerdown", onClick, true);
-      root.removeEventListener("click", onClick, true);
+      page.removeEventListener("pointerdown", onClick, true);
+      page.removeEventListener("click", onClick, true);
       root.removeEventListener(INLINE_HOVER_EVENT, onInlineHover);
     };
   }, [activeStep, completeStep, dismissed, root]);
@@ -185,7 +187,7 @@ export function TutorialExperienceProvider({
       let next: HTMLElement | null = null;
       let nextBox: DOMRect | null = null;
 
-      for (const candidate of root.querySelectorAll<HTMLElement>(
+      for (const candidate of root.ownerDocument.querySelectorAll<HTMLElement>(
         activeStep.highlightSelector ?? activeStep.targetSelector,
       )) {
         // Over a fullscreen tour, only its own targets show.
@@ -215,9 +217,11 @@ export function TutorialExperienceProvider({
 
       if (marked && marked !== next) delete marked.dataset.tourRinged;
 
+      // A target outside the canvas, such as a sidebar tab, is marked for its
+      // host to ring; the canvas draws rings only over its own.
       if (next) next.dataset.tourRinged = activeStep.id;
       marked = next;
-      setTarget(next);
+      setTarget(next && root.contains(next) ? next : null);
 
       // Bring an off-screen target into view once per step.
       if (!next || revealed) return;
