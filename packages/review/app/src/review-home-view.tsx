@@ -5,6 +5,7 @@ import {
   type ReviewCanvasOnboarding,
   type ReviewCanvasSetupActions,
   boardIconKind,
+  boardTitle,
 } from "@dev.fast/review-protocol";
 import { fuzzySegments } from "@review/fuzzy-match";
 import * as stylex from "@stylexjs/stylex";
@@ -46,7 +47,6 @@ import {
   matchesHomeFilters,
   repositoryIdentity,
   reviewMetadataPills,
-  reviewTitle,
   sortHomeReviews,
   worktreeKey,
   worktreeLabel,
@@ -1323,7 +1323,7 @@ export function ReviewHome({
                         }}
                       >
                         <SelectionCheckbox
-                          label={`Select ${reviewTitle(review)}`}
+                          label={`Select ${boardTitle(review.title)}`}
                           checked={selected.has(review.reviewId)}
                           hidden={!selected.has(review.reviewId)}
                           onToggle={(range) =>
@@ -1343,7 +1343,7 @@ export function ReviewHome({
                           {review.changed ? <ChangedBadge onIcon /> : null}
                         </span>
                         <button
-                          aria-label={`${inTrash ? "Select" : "Open"} ${reviewTitle(review)}`}
+                          aria-label={`${inTrash ? "Select" : "Open"} ${boardTitle(review.title)}`}
                           {...stylex.props(styles.rowOpen)}
                           onClick={(event) => {
                             event.stopPropagation();
@@ -1353,14 +1353,14 @@ export function ReviewHome({
                           }}
                         >
                           <span
-                            title={reviewTitle(review)}
+                            title={boardTitle(review.title)}
                             {...stylex.props(
                               styles.title,
                               Boolean(review.trashedAt) && styles.archived,
                             )}
                           >
                             <MatchedText
-                              text={reviewTitle(review)}
+                              text={boardTitle(review.title)}
                               queries={searchTerms}
                             />
                           </span>
@@ -1571,7 +1571,7 @@ export function ReviewHome({
             Delete {countLabel(confirmation.length, "whiteboard")}?
           </h2>
           <p {...stylex.props(styles.confirmBody)}>
-            “{reviewTitle(confirmation[0])}”
+            “{boardTitle(confirmation[0].title)}”
             {confirmation.length > 1
               ? ` and ${countLabel(confirmation.length - 1, "other")}`
               : ""}{" "}
@@ -2093,7 +2093,7 @@ function HomeIcon({
 /** What a dialog calls the boards it asks about: one by its title. */
 function homeTitle(reviews: readonly ReviewApiSummary[]): string {
   return reviews.length === 1
-    ? reviewTitle(reviews[0]!)
+    ? boardTitle(reviews[0]!.title)
     : `${reviews.length} whiteboards`;
 }
 

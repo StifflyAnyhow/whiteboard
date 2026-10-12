@@ -1,5 +1,8 @@
 import { fontSize, fontWeight, layer, radius } from "@canvas/scale.stylex";
-import type { ReviewDeleteConfirmationProps } from "@dev.fast/review-protocol";
+import {
+  type ReviewDeleteConfirmationProps,
+  boardTitle,
+} from "@dev.fast/review-protocol";
 import * as stylex from "@stylexjs/stylex";
 import { Fragment, type ReactElement, useEffect, useRef } from "react";
 
@@ -21,7 +24,7 @@ export function DeleteConfirmation({
   onAnswer,
 }: ReviewDeleteConfirmationProps): ReactElement {
   const cancel = useRef<HTMLButtonElement>(null);
-  const name = title.trim() || "Untitled whiteboard";
+  const name = boardTitle(title);
   // Several boards are named by their count, without quotes.
   const named = count > 1 ? `${count} whiteboards` : `“${name}”`;
   const them = count > 1 ? "them" : "it";
@@ -77,7 +80,7 @@ export function DeleteConfirmation({
                   <li key={row} {...stylex.props(styles.row)}>
                     <BoardIcon icon={board.icon} />
                     <span {...stylex.props(styles.rowTitle)}>
-                      {board.title.trim() || "Untitled whiteboard"}
+                      {boardTitle(board.title)}
                     </span>
                     {board.pullRequestNumber ? (
                       <PullRequestStateIcon

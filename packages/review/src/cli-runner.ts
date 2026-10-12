@@ -5,6 +5,7 @@ import { createInterface } from "node:readline/promises";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
+import { boardTitle } from "@dev.fast/review-protocol";
 import {
   StoreApiError,
   processIsAlive,
@@ -510,7 +511,9 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
             : "Whiteboard Desktop is ready in the background. Pass --focus to bring it forward.\n",
       );
     } else {
-      input.stdout.write(`Whiteboard Desktop is showing "${event.title}".\n`);
+      input.stdout.write(
+        `Whiteboard Desktop is showing "${boardTitle(event.title)}".\n`,
+      );
     }
   };
 

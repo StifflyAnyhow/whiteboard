@@ -2,6 +2,7 @@ import { fontSize } from "@canvas/scale.stylex";
 import {
   type ReviewCanvasContent,
   type ReviewDocumentWidthChoice,
+  boardTitle,
   parseReviewBoardPlace,
   resolveReviewSourceView,
 } from "@dev.fast/review-protocol";
@@ -165,7 +166,7 @@ export function ApiCanvas({
       );
       setData(next);
       setError(undefined);
-      content.setTitle?.(snapshot.title);
+      content.setTitle?.(boardTitle(snapshot.title));
     };
 
     void (async () => {

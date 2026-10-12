@@ -6,9 +6,10 @@ import {
   radius,
   tracking,
 } from "@canvas/scale.stylex";
-import type {
-  BoardIconKind,
-  PullRequestState,
+import {
+  type BoardIconKind,
+  type PullRequestState,
+  boardTitle,
 } from "@dev.fast/review-protocol";
 import type { BoardLinkPreview } from "@review/review-api/link-preview";
 import * as stylex from "@stylexjs/stylex";
@@ -55,7 +56,8 @@ function missingLabel(
   }
 
   // The board still exists, so the block was deleted.
-  if (target?.title && blockId !== undefined) return "Block deleted";
+  if (target?.title !== undefined && blockId !== undefined)
+    return "Block deleted";
 
   return "Board deleted";
 }
@@ -129,7 +131,7 @@ export function BoardLink({
         <BoardIcon icon={target?.icon} xstyle={[styles.icon, styles.inherit]} />
         {children}
       </a>
-      {previewing && target?.title ? (
+      {previewing && target?.title !== undefined ? (
         blockId === undefined ? (
           <PagePeek target={target} />
         ) : (
@@ -265,7 +267,7 @@ function PagePeek({ target }: { target: BoardLinkTarget }): ReactNode {
           <Badge target={target} number={target.pullRequestNumber} />
         ) : null}
       </span>
-      <span {...stylex.props(styles.title)}>{target.title}</span>
+      <span {...stylex.props(styles.title)}>{boardTitle(target.title)}</span>
       {prose.length ? (
         <span {...stylex.props(styles.clip)}>
           <Prose paragraphs={prose} />
@@ -288,7 +290,7 @@ function BlockPeek({ target }: { target: BoardLinkTarget }): ReactNode {
     <span role="tooltip" {...stylex.props(styles.card)}>
       <span {...stylex.props(styles.top)}>
         <BoardIcon icon={target.icon} xstyle={styles.kind} />
-        <span {...stylex.props(styles.crumb)}>{target.title}</span>
+        <span {...stylex.props(styles.crumb)}>{boardTitle(target.title)}</span>
         {preview.section ? (
           <>
             <svg

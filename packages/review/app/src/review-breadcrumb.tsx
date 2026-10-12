@@ -1,5 +1,5 @@
 import { elevation, fontSize, fontWeight, radius } from "@canvas/scale.stylex";
-import type { ReviewBoardPlace } from "@dev.fast/review-protocol";
+import { type ReviewBoardPlace, boardTitle } from "@dev.fast/review-protocol";
 import * as stylex from "@stylexjs/stylex";
 import {
   type MouseEvent,
@@ -68,7 +68,7 @@ export function ReviewBreadcrumb({
     >
       <button
         type="button"
-        title={parent.title}
+        title={boardTitle(parent.title)}
         {...stylex.props(styles.parent)}
         onClick={(event) => openBoard(parent.reviewId, event)}
         onAuxClick={(event) => {
@@ -76,7 +76,9 @@ export function ReviewBreadcrumb({
         }}
       >
         <BoardIcon icon={parent.icon} />
-        <span {...stylex.props(styles.parentTitle)}>{parent.title}</span>
+        <span {...stylex.props(styles.parentTitle)}>
+          {boardTitle(parent.title)}
+        </span>
       </button>
       {siblings.length > 1 && index >= 0 ? (
         <>
@@ -94,7 +96,7 @@ export function ReviewBreadcrumb({
               type="button"
               aria-haspopup="menu"
               aria-expanded={open}
-              aria-label={`${index + 1} of ${siblings.length} in ${parent.title}`}
+              aria-label={`${index + 1} of ${siblings.length} in ${boardTitle(parent.title)}`}
               {...stylex.props(styles.count)}
               onClick={() => setOpen(!open)}
             >
@@ -151,7 +153,7 @@ function SiblingList({
       ref={popover}
       popover="manual"
       role="menu"
-      aria-label={`In ${place.parent?.title ?? ""}`}
+      aria-label={`In ${place.parent ? boardTitle(place.parent.title) : ""}`}
       {...stylex.props(styles.menu)}
     >
       <div ref={list} {...stylex.props(styles.list)}>
@@ -182,7 +184,7 @@ function SiblingList({
               </span>
               <BoardIcon icon={board.icon} current={here} />
               <span {...stylex.props(styles.title, here && styles.titleHere)}>
-                {board.title}
+                {boardTitle(board.title)}
               </span>
               {board.pullRequestNumber ? (
                 <PullRequestStateIcon

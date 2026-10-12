@@ -1,4 +1,4 @@
-import type { ReviewApiSummary } from "@dev.fast/review-protocol";
+import { type ReviewApiSummary, boardTitle } from "@dev.fast/review-protocol";
 import { fuzzyMatches } from "@review/fuzzy-match";
 
 export type HomeSort = "updated" | "created" | "title" | "trash";
@@ -26,10 +26,6 @@ export const homeGroups: { id: HomeGroup; label: string }[] = [
   { id: "week", label: "Last 7 days" },
   { id: "earlier", label: "Older than 7 days" },
 ];
-
-export function reviewTitle(review: ReviewApiSummary): string {
-  return review.title.trim() || "Untitled whiteboard";
-}
 
 export function worktreeLabel(review: ReviewApiSummary): string {
   return review.repositoryPath?.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
@@ -147,7 +143,7 @@ export function matchesHomeFilters(
       .every((term) =>
         fuzzyMatches(
           term.trim(),
-          reviewTitle(review),
+          boardTitle(review.title),
           worktreeLabel(review),
           review.origin?.branch ?? "",
           repositoryLabel(review),
@@ -166,7 +162,7 @@ export function sortHomeReviews(
       review.reviewId,
       queries.filter(
         (query) =>
-          query.trim() && fuzzyMatches(query.trim(), reviewTitle(review)),
+          query.trim() && fuzzyMatches(query.trim(), boardTitle(review.title)),
       ).length,
     ]),
   );
@@ -184,7 +180,7 @@ export function sortHomeReviews(
       return Date.parse(b.trashedAt!) - Date.parse(a.trashedAt!);
 
     if (sort === "title")
-      return reviewTitle(a).localeCompare(reviewTitle(b)) || updated;
+      return boardTitle(a.title).localeCompare(boardTitle(b.title)) || updated;
 
     if (sort === "created")
       return (
