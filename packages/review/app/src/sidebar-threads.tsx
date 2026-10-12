@@ -10,6 +10,7 @@ import type { ReactElement } from "react";
 import { AGENT_LOGOS } from "./agent-logos";
 import { askMotion } from "./ask-motion.stylex";
 import { BoardIcon } from "./board-icons";
+import { FolderLabel } from "./folder-label";
 import { elevation, fontSize, fontWeight, radius } from "./scale.stylex";
 import { tokens } from "./tokens.stylex";
 
@@ -221,6 +222,13 @@ export function ThreadsSectionBody({
                       <span {...stylex.props(styles.relationSuffix)}>
                         {suffix}
                       </span>
+                    ) : null}
+                    {/* Every project's threads: where each lives. */}
+                    {threads.filter === "all" && thread.place ? (
+                      <>
+                        <span {...stylex.props(styles.spacer)} />
+                        <FolderLabel name={thread.place} />
+                      </>
                     ) : null}
                   </span>
                 </button>

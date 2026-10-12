@@ -27,7 +27,7 @@ import { ChangedBadge } from "./changed-badge";
 import { CopyIcon, copyText } from "./copy-text";
 import { homeStyles } from "./home-styles";
 import { CanvasUiContext } from "./host/canvas-ui";
-import { CheckIcon } from "./icons";
+import { CheckIcon, FOLDER_ICON_PATH } from "./icons";
 import { homeGroupMarker, homeRowMarker } from "./markers.stylex";
 import { MenuSurface, menuSurfaceStyles } from "./menu-surface";
 import { OptionMenu } from "./option-menu";
@@ -2063,7 +2063,7 @@ function HomeIcon({
       ) : kind === "filter" ? (
         <path d="M2 4h12M4 8h8M6 12h4" />
       ) : kind === "folder" ? (
-        <path d="M2 4.5v7.5h12V6H8l-1.5-1.5z" />
+        <path d={FOLDER_ICON_PATH} />
       ) : kind === "branch" ? (
         <>
           <circle cx="4" cy="3" r="1.7" />

@@ -8,6 +8,22 @@ import { tokens } from "./tokens.stylex";
 /** Styles a parent adds to an icon for its context. */
 export type IconProps = { xstyle?: stylex.StyleXStyles };
 
+/** A checkout's folder, as Home's worktree label and the sidebar draw it. */
+export const FOLDER_ICON_PATH = "M2 4.5v7.5h12V6H8l-1.5-1.5z";
+
+export function FolderIcon({ xstyle }: IconProps = {}): ReactElement {
+  return (
+    <svg
+      aria-hidden="true"
+      {...stylex.props(styles.icon, styles.folder, xstyle)}
+      focusable="false"
+      viewBox="0 0 16 16"
+    >
+      <path d={FOLDER_ICON_PATH} />
+    </svg>
+  );
+}
+
 export function CloseIcon({ xstyle }: IconProps = {}): ReactElement {
   return (
     <svg
@@ -462,6 +478,12 @@ const styles = stylex.create({
     strokeLinecap: "round",
     strokeLinejoin: "round",
     strokeWidth: "1.7px",
+  },
+  folder: {
+    width: "12px",
+    height: "12px",
+    flexShrink: 0,
+    strokeWidth: "1.3px",
   },
   settingsSliders: {
     width: "16px",
