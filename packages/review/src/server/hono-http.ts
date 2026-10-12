@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { type JsonValue, parseJsonText } from "@dev.fast/review-protocol";
 import { type HttpBindings, getRequestListener } from "@hono/node-server";
+import { REVIEW_PERSON_HEADER } from "@review/review-api/request-origin";
 import { REVIEW_APP_SESSION_ID_HEADER } from "@review/ui-telemetry-events";
 import type { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -69,7 +70,7 @@ export function applyCorsHeaders(
 
   response.headers.set(
     "access-control-allow-headers",
-    `content-type, x-review-token, ${REVIEW_APP_SESSION_ID_HEADER}`,
+    `content-type, x-review-token, ${REVIEW_PERSON_HEADER}, ${REVIEW_APP_SESSION_ID_HEADER}`,
   );
   response.headers.set(
     "access-control-allow-methods",
