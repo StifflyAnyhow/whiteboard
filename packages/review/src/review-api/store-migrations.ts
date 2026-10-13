@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
-import { CheckoutGroups } from "./checkout-groups.js";
+import type { JsonValue } from "@dev.fast/json";
 
+import { CheckoutGroups } from "./checkout-groups.js";
 import type { ReadAtCommit } from "./foreign-references.js";
 import {
   planFromScratchpad,
@@ -34,6 +35,9 @@ export interface StoreUpgradeContext {
   projectOfRepository(repositoryId: string): string;
   /** The project of the board opened last, else firstRepositoryProject's. */
   fallbackProject(): string;
+  /** Saves a version over what it was; the current one re-indexes its
+   * board's links, as every written version does. */
+  rewriteVersion(reviewId: string, version: number, snapshot: JsonValue): void;
   /** The first checkout's project, else one with no repository. */
   firstRepositoryProject(): string;
 }
@@ -51,6 +55,15 @@ interface StoreUpgrade {
   foreignKeysOff?: true;
   run(context: StoreUpgradeContext): void;
 }
+
+/** Keep versions.author_kind to its values, as a CHECK would. */
+const VERSION_AUTHOR_TRIGGERS = `
+  CREATE TRIGGER IF NOT EXISTS versions_author_kind_insert BEFORE INSERT ON versions
+    WHEN NEW.author_kind NOT IN ('person','agent','system')
+    BEGIN SELECT RAISE(ABORT, 'versions.author_kind must be person, agent or system'); END;
+  CREATE TRIGGER IF NOT EXISTS versions_author_kind_update BEFORE UPDATE OF author_kind ON versions
+    WHEN NEW.author_kind NOT IN ('person','agent','system')
+    BEGIN SELECT RAISE(ABORT, 'versions.author_kind must be person, agent or system'); END;`;
 
 export const STORE_UPGRADES: readonly StoreUpgrade[] = [
   {
@@ -233,6 +246,21 @@ export const STORE_UPGRADES: readonly StoreUpgrade[] = [
 
       if (columns.size > 0 && !columns.has("viewed_at"))
         db.exec("ALTER TABLE ask_conversations ADD COLUMN viewed_at TEXT");
+    },
+  },
+  {
+    version: 9,
+    name: "version-authors",
+    // Who wrote each version, a person or an agent, in its own column.
+    // Releases didn't record it: an agent's command and a person's edit on
+    // the canvas saved alike, so earlier versions have none. Triggers keep
+    // the column to its values; a CHECK added with it would have SQLite read
+    // every version, all of their JSON, to check the empty column.
+    run: ({ db }) => {
+      if (!columnsOf(db, "versions").has("author_kind"))
+        db.exec("ALTER TABLE versions ADD COLUMN author_kind TEXT");
+
+      db.exec(VERSION_AUTHOR_TRIGGERS);
     },
   },
 ];
