@@ -402,6 +402,7 @@ export function HomeFilterPicker({
     <PickerRow
       key={tree.key}
       label={tree.label}
+      code
       {...treeChoice(tree)}
       onClick={() =>
         onChange((current) =>
@@ -415,6 +416,7 @@ export function HomeFilterPicker({
     <PickerRow
       key={repo.key}
       label={repo.label}
+      code
       {...repoChoice(repo)}
       repository={repo.key}
       expanded={repository === repo.key}
@@ -468,6 +470,7 @@ export function HomeFilterPicker({
             <PickerRow
               key={key}
               label={key}
+              code
               checked={checked}
               count={String(n)}
               onClick={() =>
@@ -597,6 +600,7 @@ export function HomeFilterPicker({
                     <PickerRow
                       key={tree.key}
                       label={`${repo.label} › ${tree.label}`}
+                      code
                       {...treeChoice(tree)}
                       onClick={() =>
                         onChange((current) =>
@@ -666,6 +670,7 @@ export function HomeFilterPicker({
                 <PickerRow
                   key={tree.key}
                   label={tree.label}
+                  code
                   {...treeChoice(tree)}
                   onClick={() =>
                     onChange((current) =>
@@ -683,6 +688,7 @@ export function HomeFilterPicker({
 
 function PickerRow({
   label,
+  code = false,
   checked,
   count,
   repository,
@@ -693,6 +699,8 @@ function PickerRow({
   onRight,
 }: {
   label: string;
+  /** A branch, folder or repository: set as a terminal would print it. */
+  code?: boolean;
   checked: boolean | "mixed";
   count?: string;
   repository?: string;
@@ -763,7 +771,7 @@ function PickerRow({
           )}
         </span>
       </span>
-      <span {...stylex.props(styles.label)}>{label}</span>
+      <span {...stylex.props(styles.label, code && styles.code)}>{label}</span>
       <span {...stylex.props(styles.count)}>{count}</span>
       {onRight && <span aria-hidden="true">›</span>}
     </button>
@@ -801,7 +809,7 @@ const styles = stylex.create({
     outlineStyle: "none",
     backgroundColor: "transparent",
     color: tokens.ink,
-    fontFamily: tokens.fontMono,
+    fontFamily: tokens.chromeFont,
     fontSize: fontSize.body,
     padding: "0 8px",
     marginBottom: "0px",
@@ -825,12 +833,12 @@ const styles = stylex.create({
     borderRadius: radius.control,
     backgroundColor: {
       default: "transparent",
-      ":hover": tokens.homeHover,
-      ":focus-visible": tokens.homeHover,
+      ":hover": tokens.chromeHoverBg,
+      ":focus-visible": tokens.chromeHoverBg,
     },
     outlineStyle: "none",
     color: tokens.ink,
-    fontFamily: tokens.fontMono,
+    fontFamily: tokens.chromeFont,
     fontSize: fontSize.body,
     lineHeight: "18px",
     textAlign: "left",
@@ -852,9 +860,15 @@ const styles = stylex.create({
       [stylex.when.ancestor(":focus-visible", filterRowMarker)]: 1,
     },
   },
-  activeRow: { backgroundColor: tokens.homeHover },
+  activeRow: { backgroundColor: tokens.chromeHoverBg },
   label: { flex: 1, minWidth: 0, overflowWrap: "anywhere" },
-  count: { flexShrink: 0, color: tokens.inkFaint, fontSize: fontSize.small },
+  count: {
+    flexShrink: 0,
+    color: tokens.inkFaint,
+    fontSize: fontSize.small,
+    fontVariantNumeric: "tabular-nums",
+  },
+  code: { fontFamily: tokens.fontMono },
   footer: {
     display: "flex",
     justifyContent: "space-between",

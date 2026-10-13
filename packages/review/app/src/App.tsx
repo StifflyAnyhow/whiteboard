@@ -1230,7 +1230,7 @@ const mapSettingsStyles = stylex.create({
   },
   groupLabel: {
     gridColumn: "1 / -1",
-    fontFamily: tokens.fontMono,
+    fontFamily: tokens.chromeFont,
   },
   tint: {
     minHeight: "32px",

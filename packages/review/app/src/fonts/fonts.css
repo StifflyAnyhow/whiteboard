@@ -1,3 +1,14 @@
+/* Three faces, each with one role:
+   Inter, the app's own interface: sidebar, tabs, page bar, Home, menus,
+   buttons, tooltips and lists.
+   Newsreader, a board's prose, its tables and thread quotes.
+   Geist Mono, code, commit ids, file paths, line numbers and counts. */
+.review-canvas-root {
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-serif: "Newsreader", Georgia, serif;
+  --font-mono: "Geist Mono", ui-monospace, monospace;
+}
+
 @font-face {
   font-family: "Inter";
   font-style: normal;

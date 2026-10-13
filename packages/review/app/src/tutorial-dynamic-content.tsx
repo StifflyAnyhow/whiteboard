@@ -48,7 +48,7 @@ const styles = stylex.create({
     backgroundColor: tokens.transparent,
     color: tokens.accent,
     cursor: "pointer",
-    font: `${fontSize.body} ${tokens.fontMono}`,
+    font: `${fontSize.body} ${tokens.chromeFont}`,
     textDecoration: { default: null, ":hover": "underline" },
   },
   arrow: {

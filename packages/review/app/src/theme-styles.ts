@@ -25,8 +25,8 @@ export const themeStyles = stylex.create({
     // declared, so declaring them further up would freeze the dark values.
     // The workbench has no font custom property to bridge to -- it hardcodes a
     // stack per platform and per language -- so Desktop's review.css publishes
-    // --review-chrome-font; the browser build keeps the canvas's mono face.
-    "--chrome-font": "var(--review-chrome-font, var(--font-mono))",
+    // --review-chrome-font; the browser build uses the canvas's own Inter.
+    "--chrome-font": "var(--review-chrome-font, var(--font-sans))",
     // The workbench publishes a font-weight ramp, so the weights bridge like the
     // color tokens below. The sizes are fixed at the end of this rule.
     "--chrome-font-weight": "var(--vscode-fontWeight-regular, 400)",
@@ -87,34 +87,15 @@ export const themeStyles = stylex.create({
     color: tokens.ink,
     backgroundColor: tokens.bg,
     colorScheme: "dark",
-    fontFamily: tokens.fontMono,
+    fontFamily: tokens.chromeFont,
   },
   light: {
-    "--home-expiring": "#946200",
-    "--home-group": "#F3F4F6",
-    "--home-text-filter": "#2B55E610",
-    "--home-filter-active": "#2B55E616",
-    "--home-filter-active-ink": "#2B55E6",
-    "--home-hover": "#15181E0A",
-    "--home-chip-border": "#D8DBE1",
-    "--home-chip": "#F3F4F6",
-    "--home-picker": "#FFFFFF",
-    "--home-tooltip": "#15181E",
-    "--home-tooltip-border": "transparent",
-    "--home-tooltip-ink": "#FFFFFF",
-    "--home-tooltip-muted": "#9AA0AB",
-    "--home-tooltip-hint": "#9AA0AB",
-    "--home-tooltip-shadow": "#15181E33",
-    "--home-selected": "#2B55E61A",
-    "--home-check-border": "#9AA0AB",
-    "--home-bar": "#15181E",
-    "--home-bar-border": "#15181E",
-    "--home-bar-ink": "#FFFFFF",
-    "--home-bar-muted": "#FFFFFF8C",
-    "--home-bar-divider": "#FFFFFF2E",
-    "--home-bar-shadow": "0 12px 32px #15181E33",
-
     "--ghost": "#cdd1d8",
+    "--inverse-surface": "#15181e",
+    "--inverse-ink": "#ffffff",
+    "--inverse-ink-muted": "rgb(255 255 255 / 55%)",
+    "--inverse-ink-faint": "#9aa0ab",
+    "--inverse-rule": "rgb(255 255 255 / 18%)",
     "--well": "#e9ebef",
     "--raised": "#ffffff",
     "--tray": "#f3f4f6",

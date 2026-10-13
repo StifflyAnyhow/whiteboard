@@ -1379,7 +1379,7 @@ const sectionStyles = stylex.create({
       content: "'Complete ✓'",
       marginLeft: "auto",
       color: tokens.tutorialRing,
-      font: `${fontSize.micro}/16px ${tokens.fontMono}`,
+      font: `${fontSize.micro}/16px ${tokens.chromeFont}`,
     },
   },
   // Expanded sections keep a faint chevron so "this collapses" is legible
@@ -1410,7 +1410,7 @@ const sectionStyles = stylex.create({
   meta: {
     flex: "0 0 auto",
     color: tokens.inkFaint,
-    fontFamily: tokens.fontMono,
+    fontFamily: tokens.chromeFont,
     fontSize: fontSize.small,
     whiteSpace: "nowrap",
   },

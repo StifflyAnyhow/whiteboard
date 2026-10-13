@@ -684,7 +684,7 @@ const styles = stylex.create({
   },
   guideChapter: {
     color: tokens.inkMuted,
-    fontFamily: tokens.fontMono,
+    fontFamily: tokens.chromeFont,
     fontSize: fontSize.small,
     letterSpacing: tracking.chrome,
     textTransform: "uppercase",
@@ -719,7 +719,7 @@ const styles = stylex.create({
   chapter: {
     margin: 0,
     color: tokens.tutorialRing,
-    font: `${fontSize.small}/16px ${tokens.fontMono}`,
+    font: `${fontSize.small}/16px ${tokens.chromeFont}`,
     textAlign: "left",
   },
   step: {
@@ -731,7 +731,7 @@ const styles = stylex.create({
   instruction: {
     margin: 0,
     color: tokens.inkMuted,
-    font: `${fontSize.body}/18px ${tokens.fontMono}`,
+    font: `${fontSize.body}/18px ${tokens.chromeFont}`,
     textAlign: "left",
   },
   guideFooter: {

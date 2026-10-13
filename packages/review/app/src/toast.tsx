@@ -69,7 +69,7 @@ const styles = stylex.create({
     backgroundColor: "var(--vscode-notifications-background, var(--tray))",
     boxShadow: elevation.popover,
     color: "var(--vscode-notifications-foreground, var(--ink))",
-    font: `${fontSize.small}/1.4 ${tokens.fontMono}`,
+    font: `${fontSize.small}/1.4 ${tokens.chromeFont}`,
   },
   success: { borderColor: tokens.diffAdded },
   error: { borderColor: tokens.diffModified },

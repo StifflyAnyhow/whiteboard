@@ -152,7 +152,7 @@ const styles = stylex.create({
     borderRadius: radius.control,
     backgroundColor: tokens.diffRemovedBg,
     color: tokens.changeRemoved,
-    fontFamily: tokens.fontMono,
+    fontFamily: tokens.chromeFont,
     fontSize: fontSize.small,
     lineHeight: "14px",
     opacity: 1,

@@ -78,7 +78,9 @@ export const elevation = stylex.defineConsts({
   raised: "0 1px 2px var(--shadow-color)",
   // Menus, popovers and floating panels.
   popover: "0 8px 24px var(--shadow-color-strong)",
-  homeTooltip: "0 8px 24px var(--home-tooltip-shadow)",
+  homeTooltip: "0 8px 24px var(--shadow-color)",
+  // Home's selection bar, floating over the list.
+  bar: "0 16px 40px var(--shadow-color-strong)",
   dialog: "0 18px 60px var(--shadow-color-strong)",
 });
 
