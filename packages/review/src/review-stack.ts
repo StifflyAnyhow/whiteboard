@@ -1,13 +1,9 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
+import { runVcs } from "@dev.fast/local-vcs";
 import type {
   ReviewApiSummary,
   ReviewStackLayer,
 } from "@dev.fast/review-protocol";
 import { z } from "zod";
-
-const execFileAsync = promisify(execFile);
 
 const GitHubStacksSchema = z.array(
   z.object({
@@ -102,15 +98,10 @@ async function defaultRunGitHubApi(
   host: string,
   endpoint: string,
 ): Promise<string> {
-  const { stdout } = await execFileAsync(
+  const { stdout } = await runVcs(
     "gh",
-    ["api", "--hostname", host, endpoint],
-    {
-      env: { ...process.env, GH_PROMPT_DISABLED: "1" },
-      encoding: "utf8",
-      timeout: 10_000,
-      maxBuffer: 2 * 1024 * 1024,
-    },
+    ["api", "--hostname", { value: host }, { value: endpoint }],
+    { timeout: 10_000, maxBuffer: 2 * 1024 * 1024 },
   );
 
   return stdout;
