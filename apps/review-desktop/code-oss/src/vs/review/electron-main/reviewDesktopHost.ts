@@ -64,6 +64,7 @@ import { createSshAskpass } from "./remote/reviewSshAskpass.js";
 import {
   reviewSshConfigPath,
   reviewSshControlDirectory,
+  reviewSshSharesConnections,
 } from "./remote/reviewSshCommand.js";
 import { listSshAliases } from "./remote/reviewSshConfigAliases.js";
 import { reviewSshPromptRelay } from "./remote/reviewSshPromptRelay.js";
@@ -350,7 +351,9 @@ export class ReviewDesktopHost extends Disposable {
     let version: Promise<string> | undefined;
     const manager = new ReviewRemoteHosts({
       spawn: (args, options) => spawn("ssh", args, options),
-      controlDirectory: reviewSshControlDirectory(),
+      controlDirectory: reviewSshSharesConnections()
+        ? reviewSshControlDirectory()
+        : undefined,
       instance: this.environmentMainService.userDataPath,
       environment: async () => ({
         ...process.env,
