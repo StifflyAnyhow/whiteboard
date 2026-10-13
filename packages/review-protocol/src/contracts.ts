@@ -432,9 +432,26 @@ export interface ReviewSidebarLenses {
   rows: ReviewSidebarLensRow[];
 }
 
+/** A commit in the board's range, as the Diff's commit picker lists it. */
+export interface ReviewSidebarCommit {
+  commit: string;
+  subject: string;
+  author: string;
+  authoredAt: string;
+  additions: number;
+  deletions: number;
+}
+
 export interface ReviewSidebarState {
   contents: { id: string; text: string; level: "h2" | "h3"; depth?: number }[];
   view: string;
+  /** The board's commits, newest first in ancestry order, as git lists
+   * them; absent or empty without any. */
+  commits?: ReviewSidebarCommit[];
+  /** The commit the Diff view is filtered to, picked in its commit picker. */
+  commit?: string;
+  /** The compared branches, as "main ← feature". */
+  compare?: string;
   /** The heading in view, which Contents tints. */
   activeHeading?: string;
   /** For the folded Lenses and Files headers; absent without a change. */
@@ -496,13 +513,14 @@ export type ReviewThreadsFilter = "board" | "project" | "all";
  * bundle. */
 export interface ReviewSidebarSectionProps {
   /** "remaining" is the Diff view's Remaining row, above the Lenses
-   * header. */
+   * header; "commitPicker" picks the commits it shows, under it. */
   section:
     | "whiteboards"
     | "family"
     | "contents"
     | "recent"
     | "threads"
+    | "commitPicker"
     | "lenses"
     | "remaining";
   connection: { serverUrl: string; token: string };
@@ -531,6 +549,15 @@ export interface ReviewSidebarSectionProps {
     open?: readonly string[];
   };
   onFilterThreads?(filter: ReviewThreadsFilter): void;
+  /** The commit picker: the board's commits, and the one the Diff view
+   * is filtered to. */
+  commits?: {
+    list: readonly ReviewSidebarCommit[];
+    selected?: string;
+    compare?: string;
+  };
+  /** Filter the Diff view to a commit, or to all of them with null. */
+  onPickCommit?(commit: string | null): void;
   /** Whiteboard: start a new whiteboard, as its shortcut does. */
   onNewWhiteboard?(): void;
   newWhiteboardShortcut?: string;
@@ -1636,6 +1663,13 @@ export const ReviewSurfaceEventSchema = z.discriminatedUnion("event", [
     event: z.literal("markLens"),
     reviewId: requiredString,
     lensId: requiredString,
+  }),
+  /** Filter the board's Diff view to one commit, or to all of them with
+   * null, from its sidebar's Commits. */
+  z.strictObject({
+    event: z.literal("pickCommit"),
+    reviewId: requiredString,
+    commit: requiredString.nullable(),
   }),
   /** Open a saved thread in Ask, from the sidebar's Threads. */
   z.strictObject({

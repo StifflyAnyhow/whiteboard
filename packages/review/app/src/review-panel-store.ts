@@ -138,6 +138,8 @@ export interface AskOpenOptions {
 export interface ReviewNavigationActions {
   showView: (view: ReviewView) => void;
   openCommitDiff: (scope: ReviewDiffScope) => void;
+  /** Filters the Diff view to a commit, or clears it, in any view. */
+  pickCommit: (scope: ReviewDiffScope | null) => void;
   /** A lens opens its diff alongside any open peek. */
   selectLens: (lens: ReviewLensSelection) => void;
   clearLens: () => void;
@@ -282,7 +284,7 @@ export function createReviewPanelStore({
     motion: "live",
     view: initialView,
     availableViews,
-    diffScope: initialView === "diff" ? diffScope : null,
+    diffScope,
     traceSelection,
     traceStorage,
     lens,
@@ -354,6 +356,9 @@ export function createReviewPanelStore({
           ? { ...transition, diffScope: scope }
           : transition;
       }),
+    // A lens reads the whole range, so a picked commit sets it aside.
+    pickCommit: (scope) =>
+      set(scope ? { diffScope: scope, lens: null } : { diffScope: null }),
     selectLens: (lens) =>
       set((state) => ({
         ...viewTransition(state, "diff"),
@@ -527,11 +532,14 @@ function viewTransition(
   state: ReviewPanelState & ReviewNavigationState,
   requested: ReviewView,
 ): Partial<ReviewPanelState & ReviewNavigationState> {
-  const view = state.availableViews.includes(requested) ? requested : "review";
+  // Commits became a picker in Diff; an older caller's "commits" opens it.
+  const wanted = requested === "commits" ? "diff" : requested;
+  const view = state.availableViews.includes(wanted) ? wanted : "review";
 
   return {
     view,
-    ...(view !== "diff" && { diffScope: null }),
+    // A commit filter holds across views while there is a diff to filter.
+    ...(!state.availableViews.includes("diff") && { diffScope: null }),
     ...(view !== "map" &&
       state.mapFocus?.pending && {
         mapFocus: { ...state.mapFocus, pending: false },

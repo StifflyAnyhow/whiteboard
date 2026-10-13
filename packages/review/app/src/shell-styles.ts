@@ -308,9 +308,6 @@ export const shellStyles = stylex.create({
     minHeight: 0,
     overflow: "hidden",
   },
-  commitsRegion: {
-    overflow: "auto",
-  },
   // --review-toc-tail is the room below the last heading so Contents can
   // scroll it to the top edge, measured by useHeadingInView.
   reviewRegion: {
