@@ -22,9 +22,14 @@ import {
   applyAskChange,
   askUpdateSchema,
 } from "@review/ask/thread-state.js";
-import { AskThread, type AskThreadLimits } from "@review/ask/thread.js";
+import {
+  AskThread,
+  type AskThreadLimits,
+  askThreadLimits,
+} from "@review/ask/thread.js";
 import { AskThreads } from "@review/ask/threads.js";
 import { expect, it, vi } from "vitest";
+import { z } from "zod";
 
 const permissionOptions = [
   { optionId: "allow", name: "Allow once", kind: "allow_once" as const },
@@ -48,9 +53,13 @@ function fakeAgent(
     commands?: AvailableCommand[];
     /** Whether it reads images. */
     images?: boolean;
+    /** Whether it takes follow-ups into the turn under way. */
+    steering?: boolean;
   } = {},
 ) {
-  const { greeting, commands, images = false } = options;
+  const { greeting, commands, images = false, steering = false } = options;
+  const steered: string[] = [];
+  let turning = false;
   const modes: string[] = [];
   const mcpServers: McpServer[][] = [];
   const metas: unknown[] = [];
@@ -102,7 +111,20 @@ function fakeAgent(
         promptCapabilities: { image: images },
       },
       authMethods: [],
+      _meta: { steering: { supported: steering } },
     }))
+    .onRequest(
+      "_session/steering",
+      z.object({ prompt: z.array(z.object({ text: z.string() }).loose()) }),
+      ({ params }) => {
+        // Like Claude's adapter, asked to leave a follow-up that comes too
+        // late to the client.
+        if (!turning) return { outcome: "promptRequired" };
+        steered.push(params.prompt[0]!.text);
+
+        return { outcome: "injected" };
+      },
+    )
     .onRequest(methods.agent.session.new, ({ params, client }) => {
       mcpServers.push(params.mcpServers);
       metas.push(params._meta);
@@ -156,13 +178,19 @@ function fakeAgent(
     .onRequest(methods.agent.session.prompt, async ({ params, client }) => {
       const before = cancelled.mock.calls.length;
 
-      await turn(
-        client,
-        params.prompt
-          .map((block) => (block.type === "text" ? block.text : ""))
-          .join("\n"),
-        params.prompt,
-      );
+      turning = true;
+
+      try {
+        await turn(
+          client,
+          params.prompt
+            .map((block) => (block.type === "text" ? block.text : ""))
+            .join("\n"),
+          params.prompt,
+        );
+      } finally {
+        turning = false;
+      }
 
       // Like the real adapters, a turn cancelled while it ran says so.
       return {
@@ -198,6 +226,8 @@ function fakeAgent(
     mcpServers,
     metas,
     cancelled,
+    /** Follow-ups it took into a turn under way. */
+    steered,
     /** How many times the agent started. */
     launches: () => connections.length,
     /** The agent process exits on its own. */
@@ -259,6 +289,7 @@ function openThread(
     picks?: AskPicks;
     question?: AskQuestion;
     onOffer?: (offer: AskOffer) => void;
+    onSave?: (entries: AskEntry[]) => void;
     limits?: AskThreadLimits;
   } = {},
 ) {
@@ -1506,4 +1537,252 @@ it("accepts Cursor's todo list, so it carries on with the answer", async () => {
   expect(reply).toEqual({ outcome: { outcome: "accepted", todos } });
   expect(state.entries.at(-1)).toMatchObject({ text: "It is safe." });
   thread.close();
+});
+
+it("lets an answer run on with nothing following it, then ends the thread once it has sat idle unfollowed", async () => {
+  let finish!: () => void;
+
+  const fake = fakeAgent(async (client) => {
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+
+    await say(client, "Reading.");
+    await finished;
+  });
+
+  const threads = new AskThreads(fake.launch, {}, askThreadLimits, 1_000);
+
+  const thread = threads.open({
+    reviewId: "review",
+    agent: "claude",
+    cwd: "/checkout",
+    head: "abc123",
+    selection: { title: "Paragraph 3", quote: "The index is concurrent." },
+    context: "Selected text from Whiteboard.",
+    question: { text: "Is this safe?" },
+  });
+
+  try {
+    await until(thread, (state) =>
+      state.entries.some((entry) => entry.kind === "agent"),
+    );
+    expect(threads.working()).toEqual([
+      { threadId: thread.id, reviewId: "review", agentName: "Claude Code" },
+    ]);
+
+    // Answering, it runs on however long nothing follows it.
+    threads.sweep(0);
+    threads.sweep(60_000);
+    expect(threads.get(thread.id)).toBe(thread);
+
+    finish();
+    await until(thread, (state) => state.status === "idle");
+    expect(threads.working()).toEqual([]);
+
+    // Followed, an idle thread stays.
+    const unfollow = thread.subscribe(() => {});
+
+    threads.sweep(70_000);
+    threads.sweep(80_000);
+    expect(threads.get(thread.id)).toBe(thread);
+
+    unfollow();
+    threads.sweep(90_000);
+    threads.sweep(90_999);
+    expect(threads.get(thread.id)).toBe(thread);
+
+    threads.sweep(91_000);
+    expect(threads.get(thread.id)).toBeUndefined();
+  } finally {
+    threads.closeAll();
+  }
+});
+
+it("gives a follow-up asked while it answers to the turn under way, when the agent takes one", async () => {
+  const prompts: string[] = [];
+  let finish = () => {};
+
+  const { launch, steered } = fakeAgent(
+    async (client, prompt) => {
+      prompts.push(prompt);
+      const finished = new Promise<void>((resolve) => (finish = resolve));
+
+      await say(client, "Looking.");
+      await finished;
+      await say(client, "Only the runner, then.");
+    },
+    undefined,
+    { steering: true },
+  );
+
+  const thread = openThread(launch);
+
+  await until(thread, (state) => state.entries.at(-1)?.kind === "agent");
+  expect(thread.askRefusal()).toBeUndefined();
+  await thread.ask({ text: "Only the runner, please." });
+  expect(steered).toEqual(["Only the runner, please."]);
+  finish();
+
+  const done = await until(thread, (state) => state.status === "idle");
+
+  expect(prompts).toHaveLength(1);
+  expect(done.queued).toBeUndefined();
+  expect(
+    done.entries.map((entry) =>
+      entry.kind === "user" || entry.kind === "agent"
+        ? [entry.kind, entry.text]
+        : [entry.kind],
+    ),
+  ).toEqual([
+    ["user", "Is this safe?"],
+    ["agent", "Looking."],
+    ["user", "Only the runner, please."],
+    ["agent", "Only the runner, then."],
+  ]);
+  thread.close();
+});
+
+it.each([
+  ["the agent takes none", "claude" as const, false],
+  // Codex's adapter starts a turn of its own for a follow-up that comes as
+  // the turn ends, which Whiteboard would not see end.
+  ["the agent is Codex", "codex" as const, true],
+])(
+  "keeps a follow-up asked while it answers until the turn ends, when %s",
+  async (_case, agentId, steering) => {
+    const prompts: string[] = [];
+    let finish = () => {};
+
+    const { launch, steered } = fakeAgent(
+      async (client, prompt) => {
+        prompts.push(prompt);
+
+        if (prompts.length > 1) {
+          await say(client, "The runner too.");
+
+          return;
+        }
+
+        const finished = new Promise<void>((resolve) => (finish = resolve));
+
+        await say(client, "Yes.");
+        await finished;
+      },
+      undefined,
+      { steering },
+    );
+
+    const thread = openThread(launch, undefined, { agent: agentId });
+
+    await until(thread, (state) => state.entries.at(-1)?.kind === "agent");
+    await thread.ask({ text: "And the runner?" });
+    expect(thread.read().queued).toEqual([
+      { id: expect.any(String), text: "And the runner?" },
+    ]);
+    expect(
+      thread.read().entries.filter((entry) => entry.kind === "user"),
+    ).toHaveLength(1);
+    finish();
+
+    const done = await until(
+      thread,
+      (state) => state.status === "idle" && prompts.length === 2,
+    );
+
+    expect(prompts[1]).toBe("And the runner?");
+    expect(done.queued).toBeUndefined();
+    expect(
+      done.entries.map((entry) =>
+        entry.kind === "user" || entry.kind === "agent" ? entry.text : "",
+      ),
+    ).toEqual(["Is this safe?", "Yes.", "And the runner?", "The runner too."]);
+    expect(steered).toEqual([]);
+    thread.close();
+  },
+);
+
+it("drops the follow-ups waiting on a turn the reviewer stops", async () => {
+  const prompts: string[] = [];
+
+  const { launch } = fakeAgent(async (_client, prompt) => {
+    prompts.push(prompt);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+
+  const thread = openThread(launch);
+
+  await until(thread, (state) => state.status === "running");
+  await thread.ask({ text: "And the runner?" });
+  await thread.cancel();
+  expect(thread.read().queued).toBeUndefined();
+  await until(thread, (state) => state.status === "idle");
+  expect(prompts).toHaveLength(1);
+  thread.close();
+});
+
+it("disconnects and notifies watchers even if saving during close fails", async () => {
+  const fake = fakeAgent(async (client) => {
+    await say(client, "Saved answer.");
+  });
+
+  let failSave = false;
+
+  const thread = openThread(fake.launch, () => [], {
+    onSave: () => {
+      if (failSave) throw new Error("Cannot save");
+    },
+  });
+
+  await until(thread, (state) => state.status === "idle");
+  const closed = vi.fn<() => void>();
+  thread.onClose(closed);
+  failSave = true;
+  expect(() => thread.close()).toThrow("Cannot save");
+  expect(closed).toHaveBeenCalledOnce();
+  expect(() => thread.close()).not.toThrow();
+});
+
+it("ends a deleted board's active agent without saving or leaking it into idle cleanup", async () => {
+  let finish!: () => void;
+
+  const fake = fakeAgent(async (client) => {
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+
+    await say(client, "Working.");
+    await finished;
+  });
+
+  const threads = new AskThreads(fake.launch);
+
+  const save = vi.fn<() => void>(() => {
+    throw new Error("Deleted board rejects writes");
+  });
+
+  const thread = threads.open({
+    reviewId: "deleted-board",
+    agent: "claude",
+    cwd: "/checkout",
+    head: "abc",
+    selection: { title: "Question" },
+    context: "Context",
+    question: { text: "Check this" },
+    onSave: save,
+  });
+
+  await until(thread, (state) =>
+    state.entries.some((entry) => entry.kind === "agent"),
+  );
+  const closed = vi.fn<() => void>();
+  thread.onClose(closed);
+  threads.closeDeletedReviews((id) => id === "deleted-board");
+  finish();
+  expect(closed).toHaveBeenCalledOnce();
+  expect(save).not.toHaveBeenCalled();
+  expect(threads.get(thread.id)).toBeUndefined();
+  expect(threads.working()).toEqual([]);
+  expect(() => threads.sweep(Date.now() + 20 * 60_000)).not.toThrow();
+  expect(() => threads.closeAll()).not.toThrow();
 });

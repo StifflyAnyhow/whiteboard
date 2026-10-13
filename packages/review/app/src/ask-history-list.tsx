@@ -7,11 +7,11 @@ import { AskDeleteButton } from "./ask-delete";
 import { useAskHistory } from "./ask-history";
 import { askPanelStyles } from "./ask-styles";
 import { controlStyles } from "./controls-styles";
+import { formatRelativeTime } from "./format";
 import { useReviewSession } from "./host/review-session";
 import { ChatIcon, HistoryIcon } from "./icons";
-import { formatRelativeTime } from "./review-home-view";
-import { useOptionalReviewPanelStore } from "./review-panel";
-import type { AskView } from "./review-panel-model";
+import { useAskKey, useOptionalReviewPanelStore } from "./review-panel";
+import type { AskPassage, AskView } from "./review-panel-model";
 import { useReviewRoots } from "./review-root-context";
 import { fontSize } from "./scale.stylex";
 import { shellStyles } from "./shell-styles";
@@ -25,9 +25,10 @@ import { useTooltip } from "./use-tooltip";
 /** Opens the list of this review's saved conversations. */
 function useOpenAskHistory() {
   const panels = useOptionalReviewPanelStore();
+  const from = useAskKey();
 
   return panels
-    ? () => panels.getState().openAskView({ type: "history" })
+    ? () => panels.getState().openAskView({ type: "history" }, { from })
     : undefined;
 }
 
@@ -112,11 +113,12 @@ export function AskHistoryControl(): ReactElement | null {
 export function AskHistoryList({
   passage,
 }: {
-  /** Only the conversations about this passage. */
-  passage?: { quote: string; threadIds: string[] };
+  /** Only the conversations about this passage, or these. */
+  passage?: AskPassage;
 }): ReactElement {
   const history = useAskHistory();
   const panels = useOptionalReviewPanelStore();
+  const from = useAskKey();
   const openHistory = useOpenAskHistory();
 
   const session = useReviewSession();
@@ -150,7 +152,11 @@ export function AskHistoryList({
             styles.historyHeading,
           )}
         >
-          {passage ? "About this passage" : "Saved conversations"}
+          {passage?.several
+            ? "About these passages"
+            : passage
+              ? "About this passage"
+              : "Saved conversations"}
         </h3>
         {passage ? (
           <figure {...stylex.props(askPanelStyles.selection)}>
@@ -237,33 +243,15 @@ export function AskHistoryList({
                       history?.reveal(entry);
                       history?.preview(null);
 
-                      if (target.kind === "code") {
-                        void session.surface
-                          .post({
-                            name: "reveal",
-                            args: {
-                              path: target.path,
-                              startLine: target.startLine,
-                              endLine: target.endLine,
-                              side: target.side,
-                              highlight: true,
-                              preserveFocus: true,
-                            },
-                          })
-                          .catch(() =>
-                            session.bridge.notify?.({
-                              kind: "error",
-                              text: "Original source unavailable.",
-                            }),
-                          );
-                      }
-
-                      panels?.getState().openAskView({
-                        type: "saved",
-                        threadId: entry.id,
-                        selection: entry.selection,
-                        agent: entry.agent,
-                      });
+                      panels?.getState().openAskView(
+                        {
+                          type: "saved",
+                          threadId: entry.id,
+                          selection: entry.selection,
+                          agent: entry.agent,
+                        },
+                        { from },
+                      );
                     }}
                   >
                     <span {...stylex.props(styles.historyLogo)}>

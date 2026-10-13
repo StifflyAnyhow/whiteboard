@@ -115,7 +115,7 @@ submit_notarization() {
   local label="$2"
   local response="$TEMP_ROOT/$label-notary-response.json"
 
-  if ! xcrun notarytool submit "$artifact" \
+  if ! bash "$APP_DIR/scripts/apple-notary.sh" notarytool submit "$artifact" \
     "${NOTARY_ARGS[@]}" \
     --output-format json | tee "$response"; then
     echo "Apple notarization failed for $artifact" >&2
@@ -135,7 +135,7 @@ submit_notarization() {
 wait_for_notarization() {
   local submission="$1"
   local response="$TEMP_ROOT/$submission-notary-result.json"
-  xcrun notarytool wait "$submission" "${NOTARY_ARGS[@]}" \
+  bash "$APP_DIR/scripts/apple-notary.sh" notarytool wait "$submission" "${NOTARY_ARGS[@]}" \
     --output-format json | tee "$response"
   node --input-type=module -e '
     import fs from "node:fs";
@@ -159,12 +159,17 @@ rm -f -- "$ARTIFACT_DIR"/*-"$DARWIN_TARGET"-"$VERSION".zip "$DMG"
 mkdir -p "$DMG_STAGE"
 ditto "$PACKAGED_APP" "$DMG_STAGE/$PRODUCT_NAME.app"
 ln -s /Applications "$DMG_STAGE/Applications"
-hdiutil create \
-  -volname "$PRODUCT_NAME" \
-  -srcfolder "$DMG_STAGE" \
-  -ov \
-  -format UDZO \
-  "$DMG"
+# XProtect can briefly hold the new image busy on hosted runners.
+for attempt in 1 2 3 4 5; do
+  hdiutil create \
+    -volname "$PRODUCT_NAME" \
+    -srcfolder "$DMG_STAGE" \
+    -ov \
+    -format UDZO \
+    "$DMG" && break
+  [[ "$attempt" == 5 ]] && exit 1
+  sleep $((attempt * 5))
+done
 
 CODESIGN_DMG_ARGS=(--force --timestamp --sign "$CODESIGN_IDENTITY")
 if [[ -n "${CODESIGN_KEYCHAIN:-}" ]]; then
@@ -199,17 +204,17 @@ done < <(node "$APP_DIR/scripts/release-channel.mjs" "$QUALITY")
 for submission in "${NOTARY_IDS[@]}"; do
   wait_for_notarization "$submission"
 done
-xcrun stapler staple "$DMG"
-xcrun stapler validate "$DMG"
-xcrun stapler staple "$PACKAGED_APP"
-xcrun stapler validate "$PACKAGED_APP"
+bash "$APP_DIR/scripts/apple-notary.sh" stapler staple "$DMG"
+bash "$APP_DIR/scripts/apple-notary.sh" stapler validate "$DMG"
+bash "$APP_DIR/scripts/apple-notary.sh" stapler staple "$PACKAGED_APP"
+bash "$APP_DIR/scripts/apple-notary.sh" stapler validate "$PACKAGED_APP"
 spctl -a -vv --type exec "$PACKAGED_APP"
 spctl -a -vv --type open --context context:primary-signature "$DMG"
 
 while IFS=$'\t' read -r bundle artifact; do
   staged="$TEMP_ROOT/zips/$artifact/$bundle.app"
-  xcrun stapler staple "$staged"
-  xcrun stapler validate "$staged"
+  bash "$APP_DIR/scripts/apple-notary.sh" stapler staple "$staged"
+  bash "$APP_DIR/scripts/apple-notary.sh" stapler validate "$staged"
   spctl -a -vv --type exec "$staged"
   ditto -c -k --keepParent "$staged" "$ARTIFACT_DIR/$artifact-$DARWIN_TARGET-$VERSION.zip"
 done < <(node "$APP_DIR/scripts/release-channel.mjs" "$QUALITY")

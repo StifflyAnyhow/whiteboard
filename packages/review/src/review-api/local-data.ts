@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { type FSWatcher, existsSync, watch } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -30,6 +30,11 @@ import type {
   StructuralDiffEvent,
 } from "@dev.fast/review-protocol";
 import { writePrivateJsonAtomic } from "@dev.fast/trace-core";
+import type {
+  AsyncSubscription,
+  Event as WatcherEvent,
+  subscribe,
+} from "@parcel/watcher";
 import { textIncludesQuote } from "@review/evidence.js";
 import { isMissingFileError } from "@review/fs-utils.js";
 import { reviewManagedCheckoutRoot } from "@review/review-checkout-paths.js";
@@ -73,12 +78,15 @@ import {
 import { decodeImage } from "./image-decode.js";
 import { mapInputSchema } from "./map-input.js";
 import {
+  type PullRequestAddress,
+  type PullRequestProvider,
+  resolvePullRequest,
+} from "./provider.js";
+import {
   type PullRequestDeps,
   defaultPullRequestDeps,
   fetchPullRequest,
-  githubRemotes,
-  pullRequestAddress,
-  readPullRequest,
+  remoteUrls,
 } from "./pull-request.js";
 import {
   type ResolvedPullRequest,
@@ -87,6 +95,15 @@ import {
 } from "./store.js";
 import { traceSchema } from "./trace-schema.js";
 import { ReviewWorkspaces } from "./workspaces.js";
+import {
+  INERT_GIT_PATHS,
+  atTrackedEdge,
+  gitDirectoryPrefix,
+  gitEventMatters,
+  ignoredDirectories,
+  rootEventMatters,
+  trackedDirectories,
+} from "./worktree-events.js";
 import {
   EMPTY_SOURCE,
   inspectWorktree,
@@ -564,7 +581,7 @@ export class LocalReviewData {
       blobReaderIdleTimeoutMs?: number;
       workspaceDatabase?: string;
       manageWorkspaces?: boolean;
-      watch?: typeof watch;
+      subscribe?: typeof subscribe;
       /** gh, git and GitHub API access for pull request targets. */
       pullRequests?: PullRequestDeps;
     } = {},
@@ -635,9 +652,12 @@ export class LocalReviewData {
     {
       epoch: number;
       inspectedEpoch: number;
-      watchers: FSWatcher[];
+      subscriptions: Map<string, AsyncSubscription>;
       healthy: boolean;
-      inspection?: Awaited<ReturnType<typeof inspectWorktree>>;
+      inspection?: Omit<Awaited<ReturnType<typeof inspectWorktree>>, "files">;
+      tracked?: Set<string>;
+      /** Rereads ignored directories after one may have appeared. */
+      ignoring?: NodeJS.Timeout;
       /** Fork points by base ref, valid for the inspected epoch. */
       forks: Map<string, Promise<{ ref: string; commit: string }>>;
     }
@@ -646,7 +666,7 @@ export class LocalReviewData {
   private forgetWorktree(repositoryId: string) {
     const entry = this.worktrees.get(repositoryId);
 
-    if (entry) for (const watcher of entry.watchers) watcher.close();
+    if (entry) void unwatch(entry);
     this.worktrees.delete(repositoryId);
   }
 
@@ -657,52 +677,135 @@ export class LocalReviewData {
       entry = {
         epoch: 0,
         inspectedEpoch: -1,
-        watchers: [],
+        subscriptions: new Map(),
         healthy: true,
         forks: new Map(),
       };
       this.worktrees.set(repositoryId, entry);
       const state = entry;
-      const roots = new Set([vcs.rootPath]);
+      const current = () => this.worktrees.get(repositoryId) === state;
       const common = await gitCommonDir(vcs.rootPath);
 
-      if (common) roots.add(common);
+      // jj snapshots untracked files, so every event can matter there.
+      const prefix =
+        vcs.kind === "git" && common
+          ? await gitDirectoryPrefix(vcs.rootPath, common)
+          : null;
 
-      for (const root of roots) {
+      // Linux watches each directory, so skip what cannot matter.
+      const watch = async (
+        root: string,
+        ignore: string[],
+        matters: (name: string, event: WatcherEvent) => boolean,
+      ) => {
         try {
-          const watcher = (this.options.watch ?? watch)(
+          const subscription = await (
+            this.options.subscribe ??
+            (await import("@parcel/watcher")).subscribe
+          )(
             root,
-            { recursive: true },
-            () => {
-              state.epoch++;
+            (error, events) => {
+              if (error) {
+                state.healthy = false;
+                const failed = state.subscriptions.get(root);
+
+                if (failed) void release(failed);
+                state.subscriptions.delete(root);
+              } else if (
+                // Every event, since matters also notices new ignored directories.
+                events
+                  .map((event) =>
+                    matters(path.relative(root, event.path), event),
+                  )
+                  .includes(true)
+              )
+                state.epoch++;
             },
+            { ignore },
           );
 
-          watcher.on("error", () => {
-            state.epoch++;
-            state.inspectedEpoch = -1;
-            state.healthy = false;
-            watcher.close();
-          });
-          watcher.unref();
-          state.watchers.push(watcher);
+          if (!current()) return void release(subscription);
+          const previous = state.subscriptions.get(root);
+
+          state.subscriptions.set(root, subscription);
+
+          if (previous) void release(previous);
         } catch {
           state.healthy = false;
         }
-      }
+      };
+
+      const rootIgnore = async () =>
+        [
+          ...(common ? [".git"] : []),
+          ...(await ignoredDirectories(
+            vcs.rootPath,
+            vcs.kind === "jj" ? (common ?? undefined) : undefined,
+          )),
+        ].map((directory) => path.join(vcs.rootPath, directory));
+
+      let ignored = await rootIgnore();
+
+      const refreshIgnored = () => {
+        clearTimeout(state.ignoring);
+        state.ignoring = setTimeout(async () => {
+          const next = await rootIgnore();
+
+          if (!current() || next.join("\0") === ignored.join("\0")) return;
+          ignored = next;
+
+          // Parcel keeps watches an overlapping subscription shares, so
+          // unsubscribe first and treat the gap as a change.
+          const previous = state.subscriptions.get(vcs.rootPath);
+
+          state.subscriptions.delete(vcs.rootPath);
+
+          if (previous) await release(previous);
+          await watch(vcs.rootPath, ignored, rootMatters);
+          state.epoch++;
+        }, 1000);
+        state.ignoring.unref();
+      };
+
+      const rootMatters = (name: string, event: WatcherEvent) => {
+        if (
+          path.basename(name) === ".gitignore" ||
+          (event.type === "create" &&
+            atTrackedEdge(name, state.tracked) &&
+            statSync(event.path, { throwIfNoEntry: false })?.isDirectory())
+        )
+          refreshIgnored();
+
+        return prefix === null || rootEventMatters(name, state.tracked);
+      };
+
+      await Promise.all([
+        watch(vcs.rootPath, ignored, rootMatters),
+        common &&
+          watch(
+            common,
+            INERT_GIT_PATHS.map((directory) => path.join(common, directory)),
+            (name) => {
+              if (name === path.join("info", "exclude")) refreshIgnored();
+
+              return prefix === null || gitEventMatters(name, prefix);
+            },
+          ),
+      ]);
     }
 
     if (
       entry.inspection &&
       entry.inspectedEpoch === entry.epoch &&
       entry.healthy &&
-      entry.watchers.length
+      entry.subscriptions.size
     )
       return { ...entry.inspection, forks: entry.forks };
 
     const epoch = entry.epoch;
-    const inspected = await inspectWorktree(repositoryId, vcs);
+    const { files, ...inspected } = await inspectWorktree(repositoryId, vcs);
     entry.inspection = inspected;
+    entry.tracked = trackedDirectories(files);
     entry.inspectedEpoch = epoch;
     entry.forks = new Map();
 
@@ -718,8 +821,7 @@ export class LocalReviewData {
     this.closed = true;
     await this.workspaceManager?.close();
 
-    for (const entry of this.worktrees.values())
-      for (const watcher of entry.watchers) watcher.close();
+    await Promise.all([...this.worktrees.values()].map(unwatch));
     this.worktrees.clear();
     const readers = [...this.readers.values()];
 
@@ -738,6 +840,13 @@ export class LocalReviewData {
     this.closeReader(repositoryId);
     this.forgetWorktree(repositoryId);
     const rootPath = this.store.repositoryPath(repositoryId);
+
+    // Detection in a missing directory spawns and fails as "tools missing".
+    if (!existsSync(rootPath)) {
+      this.repositories.delete(repositoryId);
+
+      return Promise.resolve(null);
+    }
 
     const forget = () => {
       this.repositories.delete(repositoryId);
@@ -1040,20 +1149,20 @@ export class LocalReviewData {
     repository: { id?: string; preferred?: string },
   ): Promise<ResolvedPullRequest> {
     const deps = this.options.pullRequests ?? defaultPullRequestDeps;
-    const { host, slug, number } = pullRequestAddress(url);
+    const { provider, address } = resolvePullRequest(url);
 
     // Only a host a registered checkout already fetches from is contacted.
     const checkout = await this.pullRequestCheckout(
-      host,
-      slug,
+      provider,
+      address,
       repository,
       deps,
     );
 
-    const pullRequest = await readPullRequest(url, deps);
+    const pullRequest = await provider.readPullRequest(address, deps);
 
     const { head, base } = await fetchPullRequest(
-      { ...checkout, pullRequest },
+      { ...checkout, provider: provider.id, pullRequest },
       deps,
     );
 
@@ -1062,13 +1171,13 @@ export class LocalReviewData {
     return {
       target: { kind: "commits", repositoryId, head, base },
       pins: { repositoryId, base, head },
-      title: pullRequest.title.trim() || `PR #${number}`,
+      title: pullRequest.title.trim() || `PR #${address.number}`,
     };
   }
   /** A registered checkout with a remote for host/owner/repo, and that remote. */
   private async pullRequestCheckout(
-    host: string,
-    slug: string,
+    provider: PullRequestProvider,
+    address: PullRequestAddress,
     repository: { id?: string; preferred?: string },
     deps: PullRequestDeps,
   ) {
@@ -1091,10 +1200,8 @@ export class LocalReviewData {
 
       if (!vcs || !gitDir) continue;
 
-      const remote = (await githubRemotes(gitDir, deps)).find(
-        (entry) =>
-          entry.host === host &&
-          entry.slug.toLowerCase() === slug.toLowerCase(),
+      const remote = (await remoteUrls(gitDir, deps)).find((entry) =>
+        provider.matchesRemote(entry.url, address),
       );
 
       if (remote)
@@ -1107,6 +1214,7 @@ export class LocalReviewData {
         };
     }
 
+    const { host, slug } = address;
     const name = host === "github.com" ? slug : `${host}/${slug}`;
 
     throw new ReviewInputError(
@@ -1335,23 +1443,6 @@ export class LocalReviewData {
     if (options.peek)
       inputError(() => requireVisibleSource(quote.text, source));
   }
-  /** Legacy import keeps a document whose source ranges no longer resolve;
-   * the problem becomes a warning instead of a rejection. */
-  async validateSourceTolerant(
-    pins: Pins,
-    source: FileLineRange,
-    options: { peek: boolean },
-  ): Promise<string | null> {
-    try {
-      await this.validateSource(pins, source, options);
-
-      return null;
-    } catch (error) {
-      if (error instanceof ReviewInputError)
-        return `${source.side}/${source.file}#L${source.fromLine}-L${source.toLine}: ${error.message}`;
-      throw error;
-    }
-  }
   private readonly coverageCache = new Map<
     string,
     {
@@ -1395,6 +1486,7 @@ export class LocalReviewData {
     return {
       pending,
       comparison: entry.partial ?? {
+        counted: false,
         files: [],
         fileSources: new Map(),
         alignments: new Map(),
@@ -1482,16 +1574,21 @@ export class LocalReviewData {
   }
 
   changes(pins: Pins): Promise<LocalVcsDiffFileSummary[]>;
-  changes(pins: Pins, file: string): Promise<string>;
+  changes(pins: Pins, file: string, previousPath?: string): Promise<string>;
   changes(
     pins: Pins,
     file?: string,
+    previousPath?: string,
   ): Promise<LocalVcsDiffFileSummary[] | string>;
-  async changes(pins: Pins, file?: string) {
+  async changes(pins: Pins, file?: string, previousPath?: string) {
     if (file === undefined) return this.summaries(pins);
     checkRelativePath(file);
 
-    return this.rawPatch(pins, { paths: [file] });
+    if (previousPath) checkRelativePath(previousPath);
+
+    return this.rawPatch(pins, {
+      paths: previousPath ? [previousPath, file] : [file],
+    });
   }
   private async summaries(pins: Pins) {
     if (pins.worktreeRevision) {
@@ -1789,12 +1886,27 @@ function inputError<T>(run: () => T): T {
   }
 }
 
+async function unwatch(entry: {
+  subscriptions: Map<string, AsyncSubscription>;
+  ignoring?: NodeJS.Timeout;
+}) {
+  clearTimeout(entry.ignoring);
+  const subscriptions = [...entry.subscriptions.values()];
+
+  entry.subscriptions.clear();
+  await Promise.all(subscriptions.map(release));
+}
+
+/** Linux fails to unwatch a directory that is already gone. */
+const release = (subscription: AsyncSubscription) =>
+  subscription.unsubscribe().catch(() => {});
+
 export function openLocalReviewStore(
   databasePath: string,
   options: {
     blobReaderIdleTimeoutMs?: number;
     manageWorkspaces?: boolean;
-    watch?: typeof watch;
+    subscribe?: typeof subscribe;
     pullRequests?: PullRequestDeps;
   } = {},
 ) {
@@ -1811,8 +1923,6 @@ export function openLocalReviewStore(
     validateSource: (pins, source, options) =>
       data.validateSource(pins, source, options),
     validateResource: (pins, block) => data.validateResource(pins, block),
-    validateSourceTolerant: (pins, source, options) =>
-      data.validateSourceTolerant(pins, source, options),
   });
 
   let data: LocalReviewData;

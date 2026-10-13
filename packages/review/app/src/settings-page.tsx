@@ -1,4 +1,5 @@
 import { Button } from "@canvas/ui/button";
+import { Checkbox } from "@canvas/ui/checkbox";
 import { textStyles } from "@canvas/ui/text";
 import { fieldStyles } from "@canvas/ui/text-field";
 import type {
@@ -18,10 +19,11 @@ import { type ReactNode, useEffect, useState } from "react";
 import { ConnectCard, LegacySkillsRow } from "./connect-card";
 import { DiffrConfigSection } from "./diffr-config-section";
 import { homeStyles } from "./home-styles";
-import { Choice } from "./settings-choice";
+import { RemoteHostsSection } from "./remote-hosts-section";
 import { settingsStyles as styles } from "./settings-styles";
 import { withClass } from "./stylex-props";
 import { TraceCaptureSection } from "./trace-capture-section";
+import { SegmentedControl, labeledOptions } from "./ui/segmented";
 
 const THEME_LABELS: Record<ReviewThemeChoice, string> = {
   light: "Light",
@@ -60,6 +62,17 @@ const DOCUMENT_WIDTH_LABELS: Record<ReviewDocumentWidthChoice, string> = {
   full: "Full",
 };
 
+const CODE_FONT_SIZES = [11, 12, 13, 14, 16];
+
+// A size set elsewhere, such as one imported from VS Code, gets its own segment.
+function codeFontSizeLabels(current: number) {
+  const sizes = [...new Set([...CODE_FONT_SIZES, current])].sort(
+    (left, right) => left - right,
+  );
+
+  return Object.fromEntries(sizes.map((size) => [String(size), String(size)]));
+}
+
 const READY_NOTIFICATION_LABELS: Record<ReviewReadyNotificationChoice, string> =
   {
     notificationAndBadge: "Notification and badge",
@@ -68,9 +81,9 @@ const READY_NOTIFICATION_LABELS: Record<ReviewReadyNotificationChoice, string> =
   };
 
 /**
- * The Settings page. It opens from the application menu (Preferences →
- * Settings...), the command palette, or ⌘,. Reuses the Home page shell so the
- * surfaces read as one app.
+ * The Settings page. It opens from the application menu (Settings...), the
+ * command palette, or ⌘,. Reuses the Home page shell so the surfaces read as
+ * one app.
  *
  * The workbench owns every value here. Each setter resolves with the value that
  * landed, so a row shows the real state rather than an optimistic one.
@@ -89,6 +102,7 @@ export function SettingsPage({
   const [ctrlTab, setCtrlTab] = useState(settings.ctrlTab);
   const [openFilesIn, setOpenFilesIn] = useState(settings.openFilesIn);
   const [documentWidth, setDocumentWidth] = useState(settings.documentWidth);
+  const [codeFontSize, setCodeFontSize] = useState(settings.codeFontSize);
 
   const [readyNotification, setReadyNotification] = useState(
     settings.readyNotification,
@@ -157,7 +171,9 @@ export function SettingsPage({
                 install={install}
                 onStatusChange={setInstallStatus}
               />
-              <ConnectCard install={install} />
+              <div {...stylex.props(styles.connect)}>
+                <ConnectCard install={install} />
+              </div>
             </Section>
           ) : null}
 
@@ -201,9 +217,7 @@ export function SettingsPage({
                 {...stylex.props(styles.toggle)}
                 aria-label="Share anonymous usage data"
               >
-                <input
-                  {...stylex.props(styles.checkbox)}
-                  type="checkbox"
+                <Checkbox
                   checked={telemetryEnabled}
                   disabled={busy !== null}
                   onChange={(event) => {
@@ -221,10 +235,10 @@ export function SettingsPage({
 
           <Section label="Editor">
             <Row label="Theme" description="How Whiteboard looks.">
-              <Choice
+              <SegmentedControl
                 label="Theme"
                 value={theme}
-                labels={THEME_LABELS}
+                options={labeledOptions(THEME_LABELS)}
                 disabled={busy !== null}
                 onChange={(choice) =>
                   void run("theme", () => settings.setTheme(choice), setTheme)
@@ -235,10 +249,10 @@ export function SettingsPage({
               label="Document width"
               description="Wide and Full give diagrams and code more room. Text keeps a reading width."
             >
-              <Choice
+              <SegmentedControl
                 label="Document width"
                 value={documentWidth}
-                labels={DOCUMENT_WIDTH_LABELS}
+                options={labeledOptions(DOCUMENT_WIDTH_LABELS)}
                 disabled={busy !== null}
                 onChange={(choice) =>
                   void run(
@@ -250,13 +264,31 @@ export function SettingsPage({
               />
             </Row>
             <Row
+              label="Code font size"
+              description="Text size in diffs, code peeks, and source tabs."
+            >
+              <SegmentedControl
+                label="Code font size"
+                value={String(codeFontSize)}
+                options={labeledOptions(codeFontSizeLabels(codeFontSize))}
+                disabled={busy !== null}
+                onChange={(choice) =>
+                  void run(
+                    "code-font-size",
+                    () => settings.setCodeFontSize(Number(choice)),
+                    setCodeFontSize,
+                  )
+                }
+              />
+            </Row>
+            <Row
               label="Keymap"
               description="Vim, Emacs, and Sublime Text keys come from a bundled extension. A change needs a reload."
             >
-              <Choice
+              <SegmentedControl
                 label="Keymap"
                 value={keymap}
-                labels={KEYMAP_LABELS}
+                options={labeledOptions(KEYMAP_LABELS)}
                 disabled={busy !== null}
                 onChange={(choice) => {
                   void run(
@@ -271,10 +303,10 @@ export function SettingsPage({
               label="Ctrl+Tab"
               description="Jump back to the last used tab, or step through the tab bar."
             >
-              <Choice
+              <SegmentedControl
                 label="Ctrl+Tab"
                 value={ctrlTab}
-                labels={CTRL_TAB_LABELS}
+                options={labeledOptions(CTRL_TAB_LABELS)}
                 disabled={busy !== null}
                 onChange={(choice) =>
                   void run(
@@ -315,10 +347,10 @@ export function SettingsPage({
               label="Review ready"
               description="When an agent finishes a review you aren't looking at."
             >
-              <Choice
+              <SegmentedControl
                 label="Review ready"
                 value={readyNotification}
-                labels={READY_NOTIFICATION_LABELS}
+                options={labeledOptions(READY_NOTIFICATION_LABELS)}
                 disabled={busy !== null}
                 onChange={(choice) =>
                   void run(
@@ -338,7 +370,17 @@ export function SettingsPage({
             >
               <Button onClick={settings.manageExtensions}>Manage…</Button>
             </Row>
+            <Row
+              label="VS Code settings"
+              description="Copy settings and keybindings from VS Code or Cursor again. Replaces Whiteboard's."
+            >
+              <Button onClick={settings.importVsCodeSettings}>Import…</Button>
+            </Row>
           </Section>
+
+          {settings.remoteHosts.enabled ? (
+            <RemoteHostsSection hosts={settings.remoteHosts} />
+          ) : null}
 
           <Section label="Experimental Features">
             <Row
@@ -346,9 +388,7 @@ export function SettingsPage({
               description="Replace the standard diff view with syntax-aware diffs and linked folds."
             >
               <label {...stylex.props(styles.toggle)}>
-                <input
-                  {...stylex.props(styles.checkbox)}
-                  type="checkbox"
+                <Checkbox
                   aria-label="Structural Diffs"
                   checked={structuralDiffEnabled}
                   disabled={busy !== null}
@@ -374,9 +414,7 @@ export function SettingsPage({
               description="Show the experimental Software Map view in sessions."
             >
               <label {...stylex.props(styles.toggle)}>
-                <input
-                  {...stylex.props(styles.checkbox)}
-                  type="checkbox"
+                <Checkbox
                   aria-label="Software Map"
                   checked={softwareMapEnabled}
                   disabled={busy !== null}
@@ -396,9 +434,7 @@ export function SettingsPage({
               description="Show the experimental scratchpad on Home. Agents draw on it through Whiteboard's MCP tools."
             >
               <label {...stylex.props(styles.toggle)}>
-                <input
-                  {...stylex.props(styles.checkbox)}
-                  type="checkbox"
+                <Checkbox
                   aria-label="Scratchpad"
                   checked={scratchpadEnabled}
                   disabled={busy !== null}
@@ -419,6 +455,15 @@ export function SettingsPage({
                 onStatusChange={setInstallStatus}
               />
             ) : null}
+          </Section>
+
+          <Section label="Uninstall">
+            <Row
+              label="Uninstall Whiteboard"
+              description="Removes the whiteboard command, trace setup, and tutorial. Your sessions stay on disk."
+            >
+              <Button onClick={settings.uninstallApp}>Uninstall…</Button>
+            </Row>
           </Section>
 
           {error ? <p {...stylex.props(styles.error)}>{error}</p> : null}

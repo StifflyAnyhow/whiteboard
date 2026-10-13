@@ -16,19 +16,23 @@ import { IInstantiationService } from "../../platform/instantiation/common/insta
 import { ServiceCollection } from "../../platform/instantiation/common/serviceCollection.js";
 import { IDiffProviderFactoryService } from "../../editor/browser/widget/diffEditor/diffProviderFactoryService.js";
 import { ICodeEditorService } from "../../editor/browser/services/codeEditorService.js";
-import type { IDiffEditor } from "../../editor/browser/editorBrowser.js";
+import type { ICodeEditor, IDiffEditor } from "../../editor/browser/editorBrowser.js";
 import { LineRange } from "../../editor/common/core/ranges/lineRange.js";
 import { DetailedLineRangeMapping } from "../../editor/common/diff/rangeMapping.js";
-import { autorun, derived, type IObservable } from "../../base/common/observable.js";
+import { autorun, type IObservable } from "../../base/common/observable.js";
 import type { UnchangedRegion } from "../../editor/browser/widget/diffEditor/diffEditorViewModel.js";
 import {
 	structuralContextGaps,
 	structuralContextScopes,
 	structuralRows,
 	structuralHighlights,
+	type StructuralGap,
 } from "../common/reviewStructuralDiff.js";
+import type { ITextModel } from "../../editor/common/model.js";
 import type { ReviewFilesEditorEntry } from "./reviewFilesDiffView.js";
+import { StructuralFoldControls, StructuralFoldHover } from "./reviewStructuralFolds.js";
 import { REVIEW_API_SOURCE_SCHEME } from "../common/reviewSourceView.js";
+import type { StructuralViewedState } from "./reviewStructuralViewed.js";
 
 /** View-owned Monaco providers and editor listeners; comparison state lives in session. */
 export function createStructuralDiffEditors(
@@ -36,6 +40,7 @@ export function createStructuralDiffEditors(
 	entries: readonly ReviewFilesEditorEntry[],
 	lifetime: DisposableStore,
 	session: StructuralDiffSession,
+	viewed?: StructuralViewedState,
 ): { instantiation: IInstantiationService; entries: readonly ReviewFilesEditorEntry[] } {
 	// These models belong to this comparison. A live file can change while the
 	// comparison is open, so its editor text must come from diffr's own result.
@@ -72,8 +77,8 @@ export function createStructuralDiffEditors(
 			} else {
 				const result = await session.fileResult(source.path);
 				if (result.error) throw new Error(result.error);
-				if (result.diff?.type !== "text") throw new Error(`diffr did not supply a text result for ${source.path}.`);
-				text = result.diff[source.side]?.text ?? "";
+				// diffr's binary check is stricter than git's.
+				text = result.diff?.type === "text" ? result.diff[source.side]?.text ?? "" : "";
 			}
 			return modelService.getModel(uri) ?? modelService.createModel(text, languages.createByFilepathOrFirstLine(uri, text.split("\n", 1)[0]), uri);
 		},
@@ -95,7 +100,7 @@ export function createStructuralDiffEditors(
 	const child = lifetime.add(
 		instantiation.createChild(new ServiceCollection([IDiffProviderFactoryService, factory])),
 	);
-	attachStructuralEditors(instantiation, resolvedEntries, session, lifetime);
+	attachStructuralEditors(instantiation, resolvedEntries, session, lifetime, viewed);
 	return { instantiation: child, entries: resolvedEntries };
 }
 
@@ -107,6 +112,16 @@ export class StructuralDiffProvider implements IDocumentDiffProvider {
 	readonly onDidChange: Event<void>;
 	constructor(private readonly session: StructuralDiffSession, private readonly pairs: ReadonlyMap<string, string>, private readonly unchanged: ReadonlySet<string>) {
 		this.onDidChange = Event.map(Event.filter(session.onDidChange, change => this.path !== undefined && change.files.has(this.path)), () => undefined);
+	}
+	/** A lens can expose a child of a collapsed outer scope, so include both until it clips the outer gap. */
+	contextGapsForLens(): IDocumentDiff['contextGaps'] {
+		const path = this.path;
+		const diff = path && this.session.getTextDiff(path);
+		return diff ? structuralContextGaps(diff,
+			(id) => this.session.isRegionCollapsed(path, id) === true,
+			(id) => this.session.isRegionCollapsed(path, id),
+			true,
+		).map(gap => ({ ...gap, foldControl: false, breadcrumbs: false })) : undefined;
 	}
 	async computeDiff(...[original, modified, _options, token]: Parameters<IDocumentDiffProvider["computeDiff"]>): Promise<IDocumentDiff> {
 		if (token.isCancellationRequested) throw new CancellationError();
@@ -165,21 +180,13 @@ export class StructuralDiffProvider implements IDocumentDiffProvider {
 			quitEarly: false,
 			sourceLineAlignment: rows,
 			contextScopes: structuralContextScopes(diff),
-			// Every collapsed region is a hidden-region band, labelled by the wire.
+			// Every collapsed region is hidden, labelled by the wire, as a band or on its header line.
+			// StructuralFoldControls draws the fold controls.
 			contextGaps: structuralContextGaps(
 				diff,
 				(id) => this.session.isRegionCollapsed(path!, id) === true,
 				(id) => this.session.isRegionCollapsed(path!, id),
-			).map(gap => ({
-				...gap, labelObservable: derived(reader => {
-					for (const id of gap.regionIds) {
-						const label = this.session.regionLabel(path!, id).read(reader);
-						if (label) return label;
-					}
-					const count = Math.max(gap.originalCount, gap.modifiedCount);
-					return `${count} hidden line${count === 1 ? "" : "s"}`;
-				})
-			})),
+			).map(gap => ({ ...gap, foldControl: false, breadcrumbs: false })),
 			changeHighlights: highlights,
 		};
 	}
@@ -195,28 +202,46 @@ function attachStructuralEditors(
 	entries: readonly ReviewFilesEditorEntry[],
 	session: StructuralDiffSession,
 	lifetime: DisposableStore,
+	viewed?: StructuralViewedState,
 ): void {
 	const editors = instantiation.invokeFunction((a) => a.get(ICodeEditorService));
-	const pairs = new Map(entries.map((e) => [e.original!.toString() + "\n" + e.modified!.toString(), e.file.path]));
+	const sides = new Map(entries.flatMap((e) => [[e.original!.toString(), e.file.path], [e.modified!.toString(), e.file.path]] as const));
 	const watched = lifetime.add(new DisposableMap<IDiffEditor, DisposableStore>());
 	function watch(editor: IDiffEditor) {
 		const widget = editor as unknown as { unchangedRegions?: IObservable<readonly UnchangedRegion[]> };
 		if (!widget.unchangedRegions) return;
 		const store = new DisposableStore();
 		watched.set(editor, store);
+		// A reused editor swaps one side's model at a time.
+		const pathIn = (model: ITextModel | null) => model ? sides.get(model.uri.with({ fragment: "" }).toString()) : undefined;
+		const pathOf = () => {
+			const model = editor.getModel();
+			const path = pathIn(model?.original ?? null);
+			return path === pathIn(model?.modified ?? null) ? path : undefined;
+		};
+		const sideOf = (side: ICodeEditor) => () => pathIn(side.getModel());
+		const hover = new StructuralFoldHover();
+		store.add(new StructuralFoldControls(editor.getOriginalEditor(), "lhs", sideOf(editor.getOriginalEditor()), session, widget.unchangedRegions, hover, viewed));
+		store.add(new StructuralFoldControls(editor.getModifiedEditor(), "rhs", sideOf(editor.getModifiedEditor()), session, widget.unchangedRegions, hover, viewed));
 		let revealed = new Set<UnchangedRegion>();
 		store.add(
 			autorun((reader) => {
-				const model = editor.getModel();
-				const path = model && pairs.get(model.original.uri.with({ fragment: "" }).toString() + "\n" + model.modified.uri.with({ fragment: "" }).toString());
+				const path = pathOf();
 				const regions = widget.unchangedRegions!.read(reader);
 				if (!path || !session.getTextDiff(path)) return;
-				const gaps = structuralContextGaps(session.getTextDiff(path)!, (id) => session.isRegionCollapsed(path, id) === true, (id) => session.isRegionCollapsed(path, id));
+				let gaps: StructuralGap[] | undefined;
 				const next = new Set<UnchangedRegion>();
 				const gapOf = (region: UnchangedRegion) =>
-					gaps.find((g) => g.originalStart === region.originalLineNumber && g.modifiedStart === region.modifiedLineNumber && g.foldStateId === region.foldStateId);
+					(gaps ??= structuralContextGaps(session.getTextDiff(path)!, (id) => session.isRegionCollapsed(path, id) === true, (id) => session.isRegionCollapsed(path, id))).find((g) => g.originalStart === region.originalLineNumber && g.modifiedStart === region.modifiedLineNumber && g.foldStateId === region.foldStateId);
 				for (const region of regions) {
-					const fullyShown = region.visibleLineCountTop.read(reader) + region.visibleLineCountBottom.read(reader) >= region.lineCount;
+					const shown = region.visibleLineCountTop.read(reader) + region.visibleLineCountBottom.read(reader);
+					const fullyShown = shown >= region.lineCount;
+					if (shown > 0 && !fullyShown && !region.band) {
+						// A fold on its header line has no band to show a partial reveal, so open it fully.
+						const gap = gapOf(region);
+						if (gap) session.setRegionCollapsed(path, gap.foldStateId, false);
+						continue;
+					}
 					if (fullyShown) {
 						next.add(region);
 						if (revealed.has(region)) continue;

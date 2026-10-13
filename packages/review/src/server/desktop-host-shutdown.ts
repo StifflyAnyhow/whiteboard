@@ -1,5 +1,7 @@
 import {
   type JsonValue,
+  type ReviewGatewayHost,
+  ReviewGatewayHostSchema,
   isJsonObject,
   jsonBoolean,
   jsonProperty,
@@ -9,12 +11,23 @@ import {
 interface DesktopHostMessagePort {
   on(event: "message", listener: (event: { data: JsonValue }) => void): void;
   off(event: "message", listener: (event: { data: JsonValue }) => void): void;
+  postMessage?(message: JsonValue): void;
 }
 
 interface DesktopHostProcess {
   parentPort?: DesktopHostMessagePort;
   on(event: "message", listener: (message: JsonValue) => void): void;
   off(event: "message", listener: (message: JsonValue) => void): void;
+  send?(message: JsonValue): void;
+}
+
+export function postToDesktop(
+  hostProcess: DesktopHostProcess,
+  message: JsonValue,
+): void {
+  if (hostProcess.parentPort?.postMessage)
+    hostProcess.parentPort.postMessage(message);
+  else hostProcess.send?.(message);
 }
 
 export function listenForDesktopHostShutdown(
@@ -22,6 +35,7 @@ export function listenForDesktopHostShutdown(
   onShutdown: () => void,
   onTelemetrySetting?: (enabled: boolean) => void,
   onStageRustAnalyzer?: (path: string) => void,
+  onRemoteHosts?: (hosts: ReviewGatewayHost[]) => void,
 ): () => void {
   const handleMessage = (message: JsonValue) => {
     if (!isJsonObject(message)) return;
@@ -45,6 +59,16 @@ export function listenForDesktopHostShutdown(
       const path = jsonString(jsonProperty(message, "path"));
 
       if (path) onStageRustAnalyzer?.(path);
+
+      return;
+    }
+
+    if (type === "remote-hosts") {
+      const hosts = ReviewGatewayHostSchema.array().safeParse(
+        jsonProperty(message, "hosts"),
+      );
+
+      if (hosts.success) onRemoteHosts?.(hosts.data);
     }
   };
 

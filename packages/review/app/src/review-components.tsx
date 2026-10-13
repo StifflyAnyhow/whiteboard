@@ -3,7 +3,6 @@ import { fontSize, fontWeight } from "@canvas/scale.stylex";
 import { IconButton } from "@canvas/ui/button";
 import { textStyles } from "@canvas/ui/text";
 import { extractTraceEventText } from "@dev.fast/trace-protocol";
-import type { ReviewComponentProps } from "@review/review-document-data";
 import * as stylex from "@stylexjs/stylex";
 import type {
   CSSProperties,
@@ -12,13 +11,28 @@ import type {
   ReactNode,
   Ref,
 } from "react";
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
+import { useShallow } from "zustand/react/shallow";
 
+import { AskCloseWarning } from "./ask-close";
 import { AskDeleteThreadButton, AskOpenThreadProvider } from "./ask-delete";
 import { AskHistoryButton, AskHistoryList } from "./ask-history-list";
-import { AskPanelContent } from "./ask-panel";
-import { AskPill, type AskPresence, AskSlot, AskWindow } from "./ask-window";
+import { syncOpenAsks } from "./ask-open-state";
+import { AskPanelContent, AskReadOnlyThread } from "./ask-panel";
+import {
+  AskThreadsWatchContext,
+  useAskThreadsWatch,
+  useLatest,
+} from "./ask-thread-stream";
+import { AskPills, AskSlot, AskWindow } from "./ask-window";
 import { AuthoredCodeSurface } from "./authored-code-surface";
 import { CodePeekCard } from "./CodePeek";
 import { controlStyles } from "./controls-styles";
@@ -29,18 +43,32 @@ import {
   useOptionalReviewSession,
   useReviewSession,
 } from "./host/review-session";
-import { CloseIcon, DisclosureChevron, MapPinIcon, PopOutIcon } from "./icons";
+import {
+  CloseIcon,
+  DisclosureChevron,
+  MapPinIcon,
+  MinusIcon,
+  PopOutIcon,
+} from "./icons";
 import { newTabLinkProps } from "./link-props";
 import { chevronMarker, documentMarker } from "./markers.stylex";
 import { useReviewActions } from "./review-context";
-import { useOptionalReviewPanelStore, useReviewPanel } from "./review-panel";
+import { useReviewDiffFiles } from "./review-diff-files-context";
+import {
+  AskKeyContext,
+  useOptionalReviewPanelStore,
+  useReviewPanel,
+  useReviewPanelStore,
+} from "./review-panel";
 import type {
+  AskReport,
   GuidedTour,
   GuidedTourStop,
   PeekAnchor,
   ReviewPeekContent,
+  SourcePeekAnchor,
 } from "./review-panel-model";
-import { askShown } from "./review-panel-store";
+import { askPills, askShown } from "./review-panel-store";
 import { useReviewRoots } from "./review-root-context";
 import type { ReviewSectionSummary } from "./review-section-summary";
 import { useReviewUiState } from "./review-ui-state";
@@ -73,7 +101,9 @@ function ReviewPanelFrame({
   label,
   title,
   onClose,
+  onEscape = onClose,
   closeLabel,
+  closeRef,
   titleAccessory,
   headerActions,
   floatingFooter,
@@ -87,7 +117,10 @@ function ReviewPanelFrame({
   label: string;
   title?: string;
   onClose: () => void;
+  /** What Escape does; closing, unless the panel says otherwise. */
+  onEscape?: () => void;
   closeLabel: string;
+  closeRef?: Ref<HTMLButtonElement>;
   titleAccessory?: ReactNode;
   /** Buttons beside the close button. */
   headerActions?: ReactNode;
@@ -113,13 +146,13 @@ function ReviewPanelFrame({
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || !appRef?.current) return;
       event.preventDefault();
-      onClose();
+      onEscape();
     };
 
     document.addEventListener("keydown", closeOnEscape);
 
     return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [appRef, onClose]);
+  }, [appRef, onEscape]);
 
   // SAFETY: `--side-panel-bottom-fraction` is a CSS custom property, which
   // React forwards to style.setProperty; the CSSProperties typings only omit
@@ -163,10 +196,12 @@ function ReviewPanelFrame({
         <div {...stylex.props(panelStyles.actions)}>
           {headerActions}
           <IconButton
+            ref={closeRef}
             size="large"
             xstyle={panelStyles.close}
             onClick={onClose}
             aria-label={closeLabel}
+            data-tour-target={tour ? "tour-close" : undefined}
           >
             <CloseIcon xstyle={controlStyles.inertIcon} />
           </IconButton>
@@ -184,13 +219,6 @@ function ReviewPanelFrame({
   );
 }
 
-/**
- * Collapsible document section. The section owns its heading: it renders
- * `title` as the H2, with the id the projection pass assigned (or the heading
- * slug on the JSON path), and treats every child as body. Collapse state persists
- * per document+section in localStorage; sections marked `[collapsed]` in the
- * MDX start collapsed for first-time readers.
- */
 export function ReviewSection({
   stateKey,
   title,
@@ -198,7 +226,9 @@ export function ReviewSection({
   id,
   children,
   summary,
-}: ReviewComponentProps<"ReviewSection"> & {
+}: {
+  title: string;
+  defaultCollapsed?: boolean;
   stateKey?: string;
   id?: string;
   summary?: ReviewSectionSummary;
@@ -292,6 +322,7 @@ export function ReviewSection({
       <div
         ref={bodyRef}
         className="review-section-body"
+        data-tour-target="section-body"
         hidden={collapsed || undefined}
       >
         {children}
@@ -389,7 +420,10 @@ export function ProsePeekAnchor({
 export function AnchorLink({
   anchor,
   children,
-}: ReviewComponentProps<"AnchorLink"> & { children?: ReactNode }) {
+}: {
+  anchor: SourcePeekAnchor;
+  children?: ReactNode;
+}) {
   const openPeek = useReviewPanel((state) => state.openPeek);
 
   const peekOpen = useReviewPanel(
@@ -471,102 +505,186 @@ export function ReviewPanelHost() {
   );
 }
 
-const historyPresence: AskPresence = {
-  agentName: "Ask",
-  status: "Conversations",
-  tone: "quiet",
-};
-
 /**
- * The open conversation, in the side panel, its window or the pill. It
- * renders once, into an element of its own that moves between them, so
- * popping out, docking or minimizing never restarts it.
+ * The open Asks, each in the side panel, the window or a pill. Each renders
+ * once, into an element of its own that moves between them, so popping
+ * out, docking or minimizing never restarts it.
  */
 function AskHost() {
-  const ask = useReviewPanel((state) => state.ask);
-  const shown = useReviewPanel(askShown);
-  const closeAsk = useReviewPanel((state) => state.closeAsk);
-  const popOutAsk = useReviewPanel((state) => state.popOutAsk);
+  const store = useReviewPanelStore();
+  const session = useLatest(useReviewSession());
+
+  // Closing an Ask ends its agent; its canvas going, as for another tab,
+  // does not.
+  useEffect(
+    () =>
+      syncOpenAsks(
+        store,
+        session.current.config,
+        (threadId) =>
+          void session.current
+            .fetch(`/ask/${threadId}/close`, {
+              method: "POST",
+              keepalive: true,
+            })
+            .catch(() => {}),
+      ),
+    [store, session],
+  );
+
+  const keys = useReviewPanel(
+    useShallow((state) => state.asks.map((ask) => ask.key)),
+  );
+
+  const pills = useReviewPanel(useShallow(askPills));
+  // Every open Ask follows its thread over this one stream.
+  const watch = useAskThreadsWatch(useReviewSession());
+
+  return (
+    <AskThreadsWatchContext.Provider value={watch}>
+      {keys.map((key) => (
+        <OpenAsk key={key} askKey={key} />
+      ))}
+      {pills.length ? <AskPills asks={pills} /> : null}
+    </AskThreadsWatchContext.Provider>
+  );
+}
+
+function OpenAsk({ askKey }: { askKey: number }) {
+  const store = useReviewPanelStore();
+
+  const view = useReviewPanel(
+    (state) => state.asks.find((ask) => ask.key === askKey)?.view,
+  );
+
+  const shown = useReviewPanel((state) => askShown(state, askKey));
   const popOutTooltip = useTooltip("Pop out");
+  const minimizeTooltip = useTooltip("Minimize");
   const [node] = useState(() => document.createElement("div"));
-
   const [header, setHeader] = useState<HTMLDivElement | null>(null);
+  const checkoutGone = useReviewDiffFiles().status === "unavailable";
+  const deleted = Boolean(useReviewSession().review?.trashedAt);
+  const [warning, setWarning] = useState(false);
+  const closeButton = useRef<HTMLButtonElement>(null);
 
-  const [presence, setPresence] = useState<AskPresence>({
-    agentName: "Ask",
-    status: "New question",
-    tone: "quiet",
-  });
+  const report = useCallback(
+    (report: AskReport) => store.getState().reportAsk(askKey, report),
+    [store, askKey],
+  );
 
-  if (!ask || !shown) return null;
+  if (!view || !shown) return null;
+
+  const ask = () =>
+    store.getState().asks.find((candidate) => candidate.key === askKey);
+
+  // Closing stops the agent: while it works, ask first.
+  const close = () => {
+    if (ask()?.busy) setWarning(true);
+    else store.getState().closeAsk(askKey);
+  };
+
+  const busy = ask()?.busy ?? false;
+
+  const closeWarning =
+    warning && busy && shown !== "pill" ? (
+      <AskCloseWarning
+        anchor={closeButton}
+        agentName={ask()?.presence.agentName ?? "The agent"}
+        onMinimize={() => {
+          setWarning(false);
+          store.getState().minimizeAsk(askKey);
+        }}
+        onClose={() => store.getState().closeAsk(askKey)}
+        onKeep={() => setWarning(false)}
+      />
+    ) : null;
 
   const actions = (
     <>
       <AskDeleteThreadButton />
-      <AskHistoryButton view={ask.view} />
+      <AskHistoryButton view={view} />
     </>
   );
 
   return (
-    <AskOpenThreadProvider key={ask.key}>
-      {createPortal(
-        ask.view.type === "history" ? (
-          <AskHistoryList passage={ask.view.passage} />
-        ) : (
-          <AskPanelContent
-            selection={ask.view.selection}
-            agent={ask.view.agent}
-            savedThreadId={
-              ask.view.type === "saved" ? ask.view.threadId : undefined
+    <AskKeyContext.Provider value={askKey}>
+      <AskOpenThreadProvider>
+        {createPortal(
+          view.type === "history" ? (
+            <AskHistoryList passage={view.passage} />
+          ) : view.type === "saved" && (checkoutGone || deleted) ? (
+            <AskReadOnlyThread
+              selection={view.selection}
+              threadId={view.threadId}
+              onReport={report}
+            />
+          ) : (
+            <AskPanelContent
+              selection={view.selection}
+              agent={view.agent}
+              savedThreadId={view.type === "saved" ? view.threadId : undefined}
+              onReport={report}
+              header={header}
+            />
+          ),
+          node,
+        )}
+        {shown === "panel" ? (
+          <ReviewPanelFrame
+            tray
+            label="Ask"
+            titleAccessory={
+              <div ref={setHeader} {...stylex.props(panelStyles.title)} />
             }
-            onPresence={setPresence}
-            header={header}
-          />
-        ),
-        node,
-      )}
-      {shown === "panel" ? (
-        <ReviewPanelFrame
-          tray
-          label="Ask"
-          titleAccessory={
-            <div ref={setHeader} {...stylex.props(panelStyles.title)} />
-          }
-          onClose={closeAsk}
-          closeLabel="Close Ask"
-          headerActions={
-            <>
-              {actions}
-              <IconButton
-                ref={popOutTooltip}
-                size="large"
-                aria-label="Pop out Ask"
-                onClick={popOutAsk}
-              >
-                <PopOutIcon
-                  xstyle={[controlStyles.inertIcon, controlStyles.chromeIcon]}
-                />
-              </IconButton>
-            </>
-          }
-        >
-          <AskSlot node={node} />
-        </ReviewPanelFrame>
-      ) : shown === "window" ? (
-        <AskWindow
-          actions={actions}
-          titleAccessory={
-            <div ref={setHeader} {...stylex.props(panelStyles.title)} />
-          }
-        >
-          <AskSlot node={node} />
-        </AskWindow>
-      ) : (
-        <AskPill
-          presence={ask.view.type === "history" ? historyPresence : presence}
-        />
-      )}
-    </AskOpenThreadProvider>
+            onClose={close}
+            onEscape={warning ? () => setWarning(false) : close}
+            closeLabel="Close Ask"
+            closeRef={closeButton}
+            headerActions={
+              <>
+                {actions}
+                <IconButton
+                  ref={popOutTooltip}
+                  size="large"
+                  aria-label="Pop out Ask"
+                  onClick={() => store.getState().popOutAsk(askKey)}
+                >
+                  <PopOutIcon
+                    xstyle={[controlStyles.inertIcon, controlStyles.chromeIcon]}
+                  />
+                </IconButton>
+                <IconButton
+                  ref={minimizeTooltip}
+                  size="large"
+                  aria-label="Minimize Ask"
+                  onClick={() => store.getState().minimizeAsk(askKey)}
+                >
+                  <MinusIcon
+                    xstyle={[controlStyles.inertIcon, controlStyles.chromeIcon]}
+                  />
+                </IconButton>
+              </>
+            }
+          >
+            {closeWarning}
+            <AskSlot node={node} />
+          </ReviewPanelFrame>
+        ) : shown === "window" ? (
+          <AskWindow
+            askKey={askKey}
+            actions={actions}
+            titleAccessory={
+              <div ref={setHeader} {...stylex.props(panelStyles.title)} />
+            }
+            onClose={close}
+            closeRef={closeButton}
+          >
+            {closeWarning}
+            <AskSlot node={node} />
+          </AskWindow>
+        ) : null}
+      </AskOpenThreadProvider>
+    </AskKeyContext.Provider>
   );
 }
 
@@ -1018,6 +1136,7 @@ export function GuidedTourPanel({
               <button
                 type="button"
                 {...stylex.props(tourStyles.pill, tourStyles.pillIntro)}
+                data-tour-target="tour-next"
                 onClick={() => {
                   setHasScrolled(true);
                   stepTo(1);
@@ -1049,6 +1168,7 @@ export function GuidedTourPanel({
                   {displayIndex + 1}/{tour.stops.length}
                 </span>
                 <IconButton
+                  data-tour-target="tour-next"
                   xstyle={tourStyles.pillButton}
                   aria-label="Next step"
                   disabled={displayIndex === lastIndex}
@@ -1208,7 +1328,8 @@ function ReviewPeekContentView({
   onNativeFocus?: () => void;
   reportOutcome?: boolean;
 }) {
-  if (content.kind === "explanation") return <p>{content.text}</p>;
+  if (content.kind === "explanation")
+    return content.text ? <p>{content.text}</p> : null;
 
   if (content.kind === "source") {
     return (

@@ -1,3 +1,4 @@
+import { ContentHoverController } from "../../editor/contrib/hover/browser/contentHoverController.js";
 import { orderReviewDiffFiles } from "../common/reviewChangedFilesModel.js";
 import { CancellationToken } from "../../base/common/cancellation.js";
 import { Range } from "../../editor/common/core/range.js";
@@ -7,7 +8,7 @@ import { IDiffProviderFactoryService } from "../../editor/browser/widget/diffEdi
 import { alignmentRows } from "../common/reviewLens.js";
 import type { ReviewInlineEditorSpec, ReviewInlineEditorHandle, ReviewFindQuery } from "../common/reviewProtocol.js";
 import { reviewFileCounts } from "../common/reviewStructuralDiff.js";
-import type { ReviewDiffProgress, ReviewDiffViewport } from "../common/reviewProtocol.js";
+import type { ReviewDiffProgress } from "../common/reviewProtocol.js";
 import { lensRanges, withLens } from "./reviewLens.js";
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) dev.fast. All rights reserved.
@@ -37,7 +38,8 @@ import { ReviewFilesDiffView, ReviewFilesEditorInput, type ReviewFilesEditorEntr
 import { ReviewEmbeddedEditors } from "./reviewEmbeddedEditors.js";
 
 import { createStructuralDiffEditors } from "./reviewStructuralDiff.js";
-import { StructuralDiffSession } from "./reviewStructuralDiffSession.js";
+import { StructuralViewedState } from "./reviewStructuralViewed.js";
+import { StructuralDiffSession, type StructuralSessionChange } from "./reviewStructuralDiffSession.js";
 import type { StructuralDiffStream } from "./reviewStructuralDiffClient.js";
 
 export interface ReviewDiffViewSource {
@@ -126,10 +128,11 @@ export class ReviewDiffViewService extends Disposable {
 		let matches: DocumentMatch[] = [];
 		const view = this.create({
 			container: spec.container, lens, progress: spec.progress,
+			onSetViewed: spec.onSetViewed,
 			document: {
 				heightMode: spec.heightMode,
 				onDidChangeHeight: value => { height = value; heightChanged.fire(value); },
-				onDidFocus: spec.onDidFocus, onDidOpen: spec.onDidOpen,
+				onDidFocus: spec.onDidFocus, onDidOpen: spec.onDidOpen, onDidShowHover: spec.onDidShowHover,
 			},
 		}, source) as DiffViewController;
 		lifetime.add(view);
@@ -237,9 +240,6 @@ class DiffViewController extends Disposable implements ReviewDiffViewHandle {
 		this.pendingFileRestore = options?.restore ?? false;
 		if (!this.pendingFileRestore || !this.hasRestoredState) this.view?.revealFile(path);
 	}
-	private readonly _onDidScroll = this._register(new Emitter<ReviewDiffViewport>());
-	readonly onDidScroll = this._onDidScroll.event;
-	sourceOffset(source: ReviewDiffLens['ranges'][number]): number | undefined { return this.view?.sourceOffset(source); }
 	private viewStateKey: string | undefined;
 	private readonly saveState = this._register(new RunOnceScheduler(() => this.captureViewState(), 250));
 	private adoptedEditors: readonly ICodeEditor[] = [];
@@ -303,7 +303,9 @@ class DiffViewController extends Disposable implements ReviewDiffViewHandle {
 			this.viewStateKey = `${data.stateKey ?? sourceUri.toString()}:${structuralEnabled}:${JSON.stringify(this.spec.lens ?? null)}:${this.spec.document ? "document" : "diff"}`;
 			if (this.disposed) return;
 			const store = this._register(new DisposableStore());
-			const structural = session && structuralEnabled ? createStructuralDiffEditors(this.instantiationService, entries, store, session)
+			const viewed = session && structuralEnabled && this.spec.onSetViewed
+				? store.add(new StructuralViewedState(session, entries, () => this.progress, this.progressChanged.event)) : undefined;
+			const structural = session && structuralEnabled ? createStructuralDiffEditors(this.instantiationService, entries, store, session, viewed)
 				: { instantiation: this.instantiationService, entries };
 
 			if (this.disposed) return;
@@ -318,11 +320,11 @@ class DiffViewController extends Disposable implements ReviewDiffViewHandle {
 				const byFile = new Map(selected.map(entry => [entry.file, entry]));
 				selected = orderReviewDiffFiles([...byFile.keys()]).map(file => byFile.get(file)!);
 			}
-			const instantiation = withLens(structural.instantiation, selected, lens, store, () => this.progress, this.progressChanged.event);
+			const instantiation = withLens(structural.instantiation, selected, lens, store, () => this.progress, this.progressChanged.event, !!viewed, !!this.spec.document);
 			// The input owns the text-model references its view model resolves, so
 			// this handle disposes it alongside the view.
 			const input = store.add(instantiation.createInstance(ReviewFilesEditorInput, sourceUri, selected,
-				structuralEnabled, !!lens || !!this.spec.onToggleViewed));
+				structuralEnabled ? session : undefined, !!lens || !!this.spec.onToggleViewed));
 			const view = store.add(
 				instantiation.createInstance(
 					ReviewFilesDiffView,
@@ -330,16 +332,15 @@ class DiffViewController extends Disposable implements ReviewDiffViewHandle {
 					this.overflowWidgetsDomNode,
 					this.diffLayout,
 					this.spec.fileTreeContainer, this.spec.onToggleViewed, this.spec.onToggleSection, this.spec.document,
+					this.spec.openFile !== false,
 				),
 			);
 			this.view = view;
+			view.viewedScope = lens && !lens.wholeFiles && !this.spec.document ? 'lens' : undefined;
 			if (this.progress) view.setProgress(this.progress);
 			if (structuralEnabled) view.startLoading(selected);
 			store.add(view.onDidChangeActiveControl(() => this.bindActiveControl(view)));
-			store.add(view.onDidScroll(() => {
-				this._onDidScroll.fire({ height: view.viewportHeight });
-				this.saveState.schedule();
-			}));
+			store.add(view.onDidScroll(() => this.saveState.schedule()));
 			const itemKeys = selected.map(entry => JSON.stringify([entry.original?.toString(), entry.modified?.toString()]));
 			const savedState = this.viewStates.get(this.viewStateKey, itemKeys);
 			this.hasRestoredState = !!savedState;
@@ -360,17 +361,12 @@ class DiffViewController extends Disposable implements ReviewDiffViewHandle {
 
 	private observeSession(session: StructuralDiffSession, entries: readonly ReviewFilesEditorEntry[], view: ReviewFilesDiffView, store: DisposableStore, structuralEnabled: boolean): void {
 		const rendered = new Set<string>();
-		const annotationWarnings = new Set<string>();
-		const renderCurrentState = (change?: import("./reviewStructuralDiffSession.js").StructuralSessionChange) => {
+		const renderCurrentState = (change?: StructuralSessionChange) => {
 			if (this.disposed) return;
 			for (const entry of entries) {
 				const path = entry.file.path;
-				if (change && !change.files.has(path) && !change.labels.has(path)) continue;
+				if (change && !change.files.has(path)) continue;
 				const result = entry.file.status === "unchanged" ? {} : session.getFileResult(path);
-				if (result?.annotationError && !annotationWarnings.has(path)) {
-					annotationWarnings.add(path);
-					this._onDidError.fire(`Summary unavailable for ${path}: ${result.annotationError}`);
-				}
 				if (!result || rendered.has(path)) continue;
 				rendered.add(path);
 				if (structuralEnabled && result.hidden !== undefined) view.hideFile(path, result.hidden);
@@ -402,6 +398,12 @@ class DiffViewController extends Disposable implements ReviewDiffViewHandle {
 			this.activeControlStore.add(
 				editor.onDidFocusEditorText(() => { this.inlineEditors.setExternalActiveEditor(editor); this.spec.document?.onDidFocus?.(); }),
 			);
+			const hover = this.spec.document?.onDidShowHover && ContentHoverController.get(editor);
+			if (hover) {
+				this.activeControlStore.add(hover.onHoverContentsChanged(() => {
+					if (hover.getWidgetContent()?.trim()) this.spec.document?.onDidShowHover?.();
+				}));
+			}
 		}
 		this.decorateMatches(this.matches, this.activeMatch);
 	}

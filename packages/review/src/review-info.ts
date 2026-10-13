@@ -39,7 +39,10 @@ export async function runReviewInfo(
       (review) => review.reviewId === input.reviewUuid,
     );
 
-    if (!selected) throw new Error(`Review not found: ${input.reviewUuid}`);
+    if (!selected)
+      throw new Error(
+        `Review not found: ${input.reviewUuid}. If this is an old Whiteboard review, ask your agent to migrate your old Whiteboard reviews.`,
+      );
 
     return { event: "info", reviews: [selected] };
   }
@@ -50,7 +53,7 @@ export async function runReviewInfo(
     event: "info",
     reviews: reviews.filter(
       (review) =>
-        review.repositoryPath === root && (input.all || !review.dismissedAt),
+        review.repositoryPath === root && (input.all || !review.trashedAt),
     ),
   };
 }

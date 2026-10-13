@@ -27,6 +27,7 @@ parseReviewDesktopVerbFrame,
 parseReviewTutorialOpenResponse,
 type ReviewCliInstallApplyResponse,
 type ReviewCliInstallStatus,
+type ReviewGatewayHostState,
 type ReviewTutorialOpenResponse,
 type ReviewVerbResponse
 } from "../common/reviewProtocol.js";
@@ -71,7 +72,12 @@ export interface IReviewDesktopConnectionService {
 	setDiffrConfigValue(key: string, value: JsonValue): Promise<ReviewDiffrConfig>;
 	/** The scratchpad preference: a server preference, since the review server reads it. */
 	readScratchpadEnabled(): Promise<boolean>;
+	/** The agents answering in Ask in any review, which quitting would stop. */
+	workingAskAgents(): Promise<string[]>;
 	setScratchpadEnabled(enabled: boolean): Promise<boolean>;
+	readRemoteHosts(): Promise<ReviewGatewayHostState[]>;
+	listSshAliases(): Promise<string[]>;
+	retryRemoteHost(alias: string): Promise<void>;
 	getTutorialStatus(): Promise<{ version: 1; reviewUuid: string | null }>;
 	prepareTutorial(): Promise<void>;
 	openTutorial(): Promise<ReviewTutorialOpenResponse>;
@@ -205,6 +211,16 @@ export class ReviewDesktopConnectionService extends Disposable implements IRevie
 		return parseReviewDiffrConfig(await response.json());
 	}
 
+	async workingAskAgents(): Promise<string[]> {
+		await this.initialize();
+		const response = await fetch(`${this.serverUrl}/reviews-api/ask/working`, {
+			headers: this.authHeaders(),
+			signal: AbortSignal.timeout(5_000),
+		});
+		await this.requireOk(response, "working Ask agents");
+		return parseWorkingAskAgents(await response.json());
+	}
+
 	async readScratchpadEnabled(): Promise<boolean> {
 		await this.initialize();
 		const response = await fetch(`${this.serverUrl}/preferences/scratchpad`, {
@@ -225,6 +241,25 @@ export class ReviewDesktopConnectionService extends Disposable implements IRevie
 		});
 		await this.requireOk(response, "scratchpad preference");
 		return parseScratchpadPreference(await response.json());
+	}
+
+	async readRemoteHosts(): Promise<ReviewGatewayHostState[]> {
+		await this.initialize();
+		const response = await fetch(`${this.serverUrl}/remote-hosts`, {
+			headers: this.authHeaders(),
+			signal: AbortSignal.timeout(30_000),
+		});
+		await this.requireOk(response, "remote hosts");
+		return (await response.json()) as ReviewGatewayHostState[];
+	}
+
+	async listSshAliases(): Promise<string[]> {
+		const aliases: unknown = await this.mainProcessService.getChannel(REVIEW_DESKTOP_CHANNEL).call("listSshAliases");
+		return Array.isArray(aliases) ? aliases.filter((alias): alias is string => typeof alias === "string") : [];
+	}
+
+	async retryRemoteHost(alias: string): Promise<void> {
+		await this.mainProcessService.getChannel(REVIEW_DESKTOP_CHANNEL).call("retryRemoteHost", alias);
 	}
 
 	async saveDiffrSummarizer(input: ReviewDiffrSummarizerInput): Promise<ReviewDiffrConfig> {
@@ -574,4 +609,13 @@ function parseScratchpadPreference(value: unknown): boolean {
 		throw new Error("scratchpad preference response is malformed.");
 	}
 	return value.enabled;
+}
+
+/** The names of the agents a working-agents answer lists; anything else
+ * lists none. */
+function parseWorkingAskAgents(value: unknown): string[] {
+	if (!isJsonObject(value) || !Array.isArray(value.agents)) return [];
+	return value.agents.flatMap((agent) =>
+		isJsonObject(agent) && typeof agent.agentName === "string" ? [agent.agentName] : [],
+	);
 }

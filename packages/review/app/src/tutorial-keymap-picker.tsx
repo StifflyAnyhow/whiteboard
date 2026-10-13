@@ -1,11 +1,9 @@
 import type { ReviewKeymapChoice } from "@dev.fast/review-protocol";
-import type { ReviewComponentProps } from "@review/review-document-data";
 import * as stylex from "@stylexjs/stylex";
 import { useState } from "react";
 
-import { controlStyles } from "./controls-styles";
-import { withClass } from "./stylex-props";
 import { useTutorial } from "./tutorial-context";
+import { SegmentedControl } from "./ui/segmented";
 
 const choices: readonly { value: ReviewKeymapChoice; label: string }[] = [
   { value: "none", label: "VS Code default" },
@@ -14,51 +12,29 @@ const choices: readonly { value: ReviewKeymapChoice; label: string }[] = [
   { value: "sublime", label: "Sublime Text" },
 ];
 
-export function TutorialKeymapPicker(
-  _props: ReviewComponentProps<"TutorialKeymapPicker">,
-) {
+export function TutorialKeymapPicker() {
   const tutorial = useTutorial();
   const [pending, setPending] = useState<ReviewKeymapChoice | null>(null);
 
   return (
-    // The class is the tutorial's target.
-    <div
-      {...withClass(
-        "tutorial-keymap-picker",
-        controlStyles.segmented,
-        styles.group,
-      )}
-      role="group"
-      aria-label="Keybindings"
-    >
-      {choices.map((choice) => {
-        const pressed = tutorial?.content.keymap === choice.value;
-        const disabled = !tutorial || pending !== null;
-
-        return (
-          <button
-            key={choice.value}
-            type="button"
-            aria-pressed={pressed}
-            disabled={disabled}
-            {...stylex.props(
-              controlStyles.segment,
-              controlStyles.segmentLarge,
-              pressed && controlStyles.segmentActive,
-            )}
-            onClick={() => {
-              if (!tutorial) return;
-              setPending(choice.value);
-              void tutorial
-                .selectKeymap(choice.value)
-                .finally(() => setPending(null));
-            }}
-          >
-            {pending === choice.value ? "Applying…" : choice.label}
-          </button>
-        );
-      })}
-    </div>
+    <SegmentedControl
+      label="Keybindings"
+      className="tutorial-keymap-picker"
+      data-tour-target="keymap-picker"
+      value={tutorial?.content.keymap}
+      options={choices.map((choice) => ({
+        value: choice.value,
+        label: pending === choice.value ? "Applying…" : choice.label,
+      }))}
+      onChange={(value) => {
+        if (!tutorial) return;
+        setPending(value);
+        void tutorial.selectKeymap(value).finally(() => setPending(null));
+      }}
+      size="large"
+      disabled={!tutorial || pending !== null}
+      xstyle={styles.group}
+    />
   );
 }
 

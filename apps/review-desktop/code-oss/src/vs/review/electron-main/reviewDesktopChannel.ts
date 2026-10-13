@@ -10,6 +10,8 @@ import type { IDialogMainService } from "../../platform/dialogs/electron-main/di
 import type { IWindowsMainService } from "../../platform/windows/electron-main/windows.js";
 import type { ReviewDesktopConnection } from "../common/reviewDesktopBootstrap.js";
 import { editorPosition, externalEditorUrl, type ReviewExternalEditorTarget } from "../common/reviewExternalEditor.js";
+import { REVIEW_SSH_ANSWER_CALL, REVIEW_SSH_PROMPT_EVENT } from "../common/reviewSshPrompt.js";
+import { reviewSshPromptRelay, type ReviewSshPromptRelay } from "./remote/reviewSshPromptRelay.js";
 import type { ReviewDesktopHost } from "./reviewDesktopHost.js";
 import { applicationPickerOptions, launchApplication, launchExternalEditorUrl, launchZedWorkspace } from "./reviewExternalEditorLauncher.js";
 
@@ -40,10 +42,12 @@ export class ReviewDesktopChannel implements IServerChannel {
     private readonly windows: IWindowsMainService,
     private readonly moveToApplications: () => boolean,
     private readonly dialogs: Pick<IDialogMainService, "showOpenDialog">,
+    private readonly sshPrompts: ReviewSshPromptRelay = reviewSshPromptRelay,
     private readonly launcher: ReviewExternalLauncher = externalLauncher,
   ) {}
 
-  listen<T>(): Event<T> {
+  listen<T>(_context: string, event: string): Event<T> {
+    if (event === REVIEW_SSH_PROMPT_EVENT) return this.sshPrompts.onPrompt as Event<T>;
     return Event.None as Event<T>;
   }
 
@@ -94,6 +98,19 @@ export class ReviewDesktopChannel implements IServerChannel {
       const parent = this.windows.getFocusedWindow()?.win ?? undefined;
       const result = await this.dialogs.showOpenDialog(applicationPickerOptions(process.platform), parent);
       return (result.canceled ? null : result.filePaths[0] ?? null) as T;
+    }
+    if (command === "listSshAliases") {
+      return (await this.host.listSshAliases()) as T;
+    }
+    if (command === "retryRemoteHost") {
+      if (typeof arg === "string") this.host.retryRemoteHost(arg);
+      return undefined as T;
+    }
+    if (command === REVIEW_SSH_ANSWER_CALL) {
+      const { id, answer } = (arg ?? {}) as { id?: unknown; answer?: unknown };
+      if (typeof id === "number")
+        this.sshPrompts.answer(id, typeof answer === "string" ? answer : undefined);
+      return undefined as T;
     }
     throw new Error(`Unknown Review Desktop channel call: ${command}`);
   }

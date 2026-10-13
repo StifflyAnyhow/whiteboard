@@ -1,6 +1,6 @@
 {
   "name": "@dev.fast/review-desktop",
-  "version": "0.2.0",
+  "version": "0.2.4",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -15,7 +15,6 @@
     "protocol:sync": "node scripts/protocol-sync.mjs",
     "smoke:error-telemetry": "node scripts/smoke-error-telemetry.mjs",
     "smoke:linux-ui": "node scripts/smoke-linux-ui.mjs",
-    "smoke:telemetry-delivery": "node scripts/smoke-telemetry-delivery.mjs",
     "test:e2e:lsp": "node scripts/lsp-e2e.mjs",
     "test:e2e:telemetry": "node scripts/e2e/run.mjs --journey telemetry-contract --runtime \"${REVIEW_E2E_RUNTIME:?stage a runtime, see scripts/e2e/TESTING.md}\"",
     "pretest": "pnpm run protocol:sync",
@@ -25,11 +24,11 @@
     "app:package:windows": "bash scripts/package-windows.sh"
   },
   "dependencies": {
-    "@dev.fast/review": "workspace:*",
-    "@dev.fast/review-protocol": "workspace:*"
+    "@dev.fast/review-protocol": "workspace:*",
+    "@dev.fast/whiteboard": "workspace:*"
   },
   "devDependencies": {
-    "@dev.fast/diffr": "0.1.10",
+    "@dev.fast/diffr": "workspace:*",
     "@dev.fast/review-canvas": "workspace:*",
     "@types/node": "24.12.2",
     "jsdom": "29.1.1",

@@ -43,9 +43,8 @@ export const layer = stylex.defineConsts({
   // A side panel docked over the canvas as a sheet on narrow screens.
   sheet: "50",
   popover: "120",
-  // A modal and its backdrop, over everything in the canvas but toasts.
+  // A modal and its backdrop, over everything in the canvas.
   dialog: "10000",
-  toast: "10001",
   agentSelection: "10002",
 });
 
@@ -69,6 +68,8 @@ export const elevation = stylex.defineConsts({
 });
 
 export const tracking = stylex.defineConsts({
+  // Key hints set in Inter, which has the ⌘ glyph.
+  shortcut: "0.14em",
   // Uppercase micro labels.
   caps: "0.08em",
   // Uppercase chrome labels; matches --chrome-tracking.

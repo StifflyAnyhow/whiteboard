@@ -78,7 +78,7 @@ import {
   useReviewPanelStore,
   useSuppressPanelMotionOnCanvasResume,
 } from "./review-panel";
-import { type ReviewDiffScope, askShown } from "./review-panel-store";
+import { type ReviewDiffScope, askDockedShown } from "./review-panel-store";
 import { ReviewRootsProvider, useReviewContainer } from "./review-root-context";
 import { ReviewStackSelector } from "./review-stack-selector";
 import { ReviewToc } from "./review-toc";
@@ -107,9 +107,9 @@ import { withClass } from "./stylex-props";
 import { themeStyles } from "./theme-styles";
 import { tokens } from "./tokens.stylex";
 import { traceStyles } from "./trace-styles";
-import { useTutorial } from "./tutorial-context";
 import { TutorialExperienceProvider } from "./tutorial-experience";
 import { captureUiEvent } from "./ui-telemetry";
+import { segmentStyles } from "./ui/segmented";
 import { useReviewTabTelemetry } from "./use-review-tab-telemetry";
 import { useTooltip } from "./use-tooltip";
 import { useTraceList } from "./use-trace-list";
@@ -165,10 +165,7 @@ export interface RenderedReviewDocument {
   key: string;
   routePath: string;
   filePath: string;
-  anchors: ReadonlyMap<
-    string,
-    import("@review/review-document-data").DocumentAnchor
-  >;
+  anchors: ReadonlyMap<string, import("./review-panel-model").PeekAnchor>;
   documentSoftwareModels: NormalizedSoftwareModel[];
   tocEntries?: import("./review-document-headings").ReviewTocEntry[];
   /** True while the document has no blocks at all, as right after creation. */
@@ -298,6 +295,7 @@ function ReviewLayoutContent({
   // The scratchpad is a document and nothing else: no source tree to browse,
   // nothing to share, nothing to dismiss.
   const scratchpad = session.review?.kind === "scratchpad";
+  const sourceWindows = session.review?.available?.sourceWindows !== false;
   useEffect(() => {
     if (scratchpad) captureUiEvent(session, "scratchpad_opened");
   }, [scratchpad, session]);
@@ -306,7 +304,7 @@ function ReviewLayoutContent({
   const panelStore = useReviewPanelStore();
   useSuppressPanelMotionOnCanvasResume(appRef);
   const activePanel = useReviewPanel((state) => state.active);
-  const askDocked = useReviewPanel((state) => askShown(state) === "panel");
+  const askDocked = useReviewPanel(askDockedShown);
   const panelMotion = useReviewPanel((state) => state.motion);
   const activeView = useReviewPanel((state) => state.view);
   const diffScope = useReviewPanel((state) => state.diffScope);
@@ -415,9 +413,9 @@ function ReviewLayoutContent({
   const storedList = useTraceList();
   const diffFiles = useReviewDiffFiles();
 
-  // The scratchpad has no repository of its own, so no traces to show.
   const hasTraceSessions =
     !scratchpad &&
+    !session.review?.host &&
     ((session.review?.traces.size ?? 0) > 0 ||
       storedList.status !== "loaded" ||
       storedList.sessions.length > 0);
@@ -428,14 +426,21 @@ function ReviewLayoutContent({
       ? diffFiles.files.length
       : null;
 
+  const hasDiff =
+    hasChangeRange &&
+    !(diffFiles.status === "loaded" && diffFiles.files.length === 0);
+
+  const hasCommits = commits.length > 0;
+
   const reviewViews = useMemo(
     () =>
       offeredReviewViews({
-        hasChangeRange,
+        hasCommits,
+        hasDiff,
         softwareMapEnabled,
         hasTraceSessions,
       }),
-    [hasChangeRange, hasTraceSessions, softwareMapEnabled],
+    [hasCommits, hasDiff, hasTraceSessions, softwareMapEnabled],
   );
 
   useLayoutEffect(() => {
@@ -445,8 +450,6 @@ function ReviewLayoutContent({
   const lenses = useReviewLenses();
 
   useReviewTabTelemetry(activeView);
-
-  const tutorial = useTutorial() !== null;
 
   const tocEntries = document.tocEntries ?? [];
 
@@ -528,8 +531,8 @@ function ReviewLayoutContent({
             <div {...stylex.props(shellStyles.topbarLeft, topbarTabsMarker)}>
               <div
                 {...stylex.props(
-                  controlStyles.segmented,
-                  controlStyles.segmentedTopbar,
+                  segmentStyles.segmented,
+                  segmentStyles.segmentedTopbar,
                 )}
                 role="group"
                 aria-label="Session views"
@@ -544,14 +547,15 @@ function ReviewLayoutContent({
                         : reviewViewLabel(view)
                     }
                     aria-pressed={activeView === view}
+                    data-tour-target={`${view}-tab`}
                     title={view === "map" ? "Map (Experimental)" : undefined}
                     {...withClass(
                       "review-segment",
                       segmentMarker,
-                      controlStyles.segment,
-                      controlStyles.segmentTopbar,
-                      activeView === view && controlStyles.segmentActive,
-                      activeView === view && controlStyles.segmentTopbarActive,
+                      segmentStyles.segment,
+                      segmentStyles.segmentTopbar,
+                      activeView === view && segmentStyles.segmentActive,
+                      activeView === view && segmentStyles.segmentTopbarActive,
                     )}
                     onClick={() => {
                       if (view === "diff")
@@ -577,9 +581,9 @@ function ReviewLayoutContent({
                     {view === "diff" && filesTabFileCount !== null && (
                       <span
                         {...stylex.props(
-                          controlStyles.segmentCount,
+                          segmentStyles.segmentCount,
                           activeView === view &&
-                            controlStyles.segmentCountActive,
+                            segmentStyles.segmentCountActive,
                         )}
                       >
                         {filesTabFileCount}
@@ -588,9 +592,9 @@ function ReviewLayoutContent({
                     {view === "commits" && (
                       <span
                         {...stylex.props(
-                          controlStyles.segmentCount,
+                          segmentStyles.segmentCount,
                           activeView === view &&
-                            controlStyles.segmentCountActive,
+                            segmentStyles.segmentCountActive,
                         )}
                       >
                         {commits.length}
@@ -610,7 +614,7 @@ function ReviewLayoutContent({
                   shellStyles.topbarContext,
                 )}
               >
-                {!scratchpad && (
+                {!scratchpad && sourceWindows && (
                   <Button
                     variant="ghost"
                     xstyle={shellStyles.openSourceTree}
@@ -922,7 +926,7 @@ function ReviewBatonChip({
 }: {
   outcome: ReviewSubmissionOutcome | null;
 }): ReactElement | null {
-  const tooltip = useTooltip<HTMLSpanElement>("Dismissed");
+  const tooltip = useTooltip<HTMLSpanElement>("Deleted");
 
   if (!outcome) return null;
 
@@ -941,7 +945,7 @@ function ReviewBatonChip({
         <rect x="1.6" y="2.6" width="12.8" height="3.4" rx="1" />
         <path d="M3 6v6.2a1.2 1.2 0 0 0 1.2 1.2h7.6A1.2 1.2 0 0 0 13 12.2V6" />
       </svg>
-      <span>dismissed</span>
+      <span>deleted</span>
     </span>
   );
 }

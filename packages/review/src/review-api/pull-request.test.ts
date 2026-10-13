@@ -7,11 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ReviewInputError } from "./document.js";
 import { openLocalReviewStore } from "./local-data.js";
+import { resolvePullRequest } from "./provider.js";
 import {
   type PullRequestDeps,
   type PullRequestRecord,
   defaultPullRequestDeps,
-  readPullRequest,
 } from "./pull-request.js";
 
 const url = "https://github.com/acme/widget/pull/7";
@@ -23,6 +23,12 @@ const command = <Operation>(operation: Operation) => ({
 });
 
 describe("reading a pull request", () => {
+  const readPullRequest = (prUrl: string, deps: PullRequestDeps) => {
+    const { provider, address } = resolvePullRequest(prUrl);
+
+    return provider.readPullRequest(address, deps);
+  };
+
   const record = {
     number: 7,
     title: "Add widgets",
@@ -67,6 +73,7 @@ describe("reading a pull request", () => {
     await expect(readPullRequest(url, using)).resolves.toEqual({
       host: "github.com",
       slug: "acme/widget",
+      headRef: "refs/pull/7/head",
       ...record,
     });
     expect(using.calls.at(-1)).toEqual([
@@ -82,6 +89,7 @@ describe("reading a pull request", () => {
     await expect(readPullRequest(enterprise, using)).resolves.toEqual({
       host: "ghe.example.com",
       slug: "acme/widget",
+      headRef: "refs/pull/7/head",
       ...record,
     });
     expect(using.calls[0]).toContain("ghe.example.com/acme/widget");
@@ -130,7 +138,7 @@ describe("creating a review from a pull request URL alone", () => {
   let local: ReturnType<typeof openLocalReviewStore>;
 
   /** What gh reports; the tests move the base as GitHub would. */
-  let pr: Omit<PullRequestRecord, "host" | "slug">;
+  let pr: Omit<PullRequestRecord, "host" | "slug" | "headRef">;
 
   let ghCalls: number;
 
@@ -281,6 +289,48 @@ describe("creating a review from a pull request URL alone", () => {
       headMoved: true,
     });
     expect(ghCalls).toBe(calls + 1);
+  });
+
+  it("requires restoring a deleted PR review before reusing it", async () => {
+    await local.data.register(checkout);
+    const created = await createFromUrl();
+    await local.store.execute(
+      command({
+        type: "lifecycle",
+        state: "trash",
+        reviewId: created.reviewId,
+      }),
+    );
+    const calls = ghCalls;
+
+    await expect(createFromUrl()).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining(created.reviewId),
+    });
+    expect(ghCalls).toBe(calls);
+    expect(local.store.list()).toHaveLength(1);
+    expect(local.store.read(created.reviewId).trashedAt).toBeTruthy();
+
+    await local.store.execute(
+      command({
+        type: "lifecycle",
+        state: "active",
+        reviewId: created.reviewId,
+      }),
+    );
+    expect(await createFromUrl()).toMatchObject({
+      created: false,
+      reviewId: created.reviewId,
+    });
+    await expect(
+      local.store.execute(
+        command({
+          type: "rename",
+          reviewId: created.reviewId,
+          title: "Continued review",
+        }),
+      ),
+    ).resolves.toMatchObject({ reviewId: created.reviewId });
   });
 
   it("diffs a merge-committed PR from GitHub's frozen base, not the absorbing branch", async () => {

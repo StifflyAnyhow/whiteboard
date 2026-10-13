@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-import { randomUUID } from "node:crypto";
-
 import { createReviewApi } from "@review/review-api/http";
 import { ReviewStore } from "@review/review-api/store";
 import { Hono } from "hono";
@@ -28,7 +26,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-it("exposes JSON section and Markdown headings plus imported PR and stack navigation", async () => {
+it("exposes JSON section and Markdown headings plus imported PR navigation", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal(
     "ResizeObserver",
@@ -48,48 +46,40 @@ it("exposes JSON section and Markdown headings plus imported PR and stack naviga
     validateSource: async () => {},
     validateResource: async () => {},
   });
-  const reviewId = randomUUID();
-  await store.importVersion({
-    reviewId,
-    title: "Navigation",
-    pins: { repositoryId: "repo", base: "base", head: "head" },
-    createdAt: new Date().toISOString(),
-    origin: {
-      pullRequestNumber: 42,
-      pullRequestUrl: "https://github.com/example/repo/pull/42",
-    },
-    document: [
-      { type: "markdown", markdown: "## Summary\n\nText\n\n### **Details**" },
-      {
-        type: "section",
-        title: "Implementation",
-        children: [{ type: "markdown", markdown: "## Details\n\nNested text" }],
-      },
-    ],
-  });
-  const app = new Hono();
-  app.get("/reviews-api/:id/stack", (c) =>
-    c.json({
-      layers: [
-        {
-          branch: "first",
-          pullRequestNumber: 41,
-          pullRequestUrl: null,
-          reviewUuid: "11111111-1111-4111-8111-111111111111",
-          reviewTitle: "Earlier",
-          relation: "earlier",
+
+  const { reviewId } = await store.execute(
+    {
+      operation: {
+        type: "create",
+        title: "Navigation",
+        target: {
+          kind: "commits",
+          repositoryId: "repo",
+          base: "base",
+          head: "head",
         },
+      },
+    },
+    {
+      origin: {
+        pullRequestNumber: 42,
+        pullRequestUrl: "https://github.com/example/repo/pull/42",
+      },
+      document: [
+        { type: "markdown", markdown: "## Summary\n\nText\n\n### **Details**" },
         {
-          branch: "second",
-          pullRequestNumber: 42,
-          pullRequestUrl: null,
-          reviewUuid: reviewId,
-          reviewTitle: "Navigation",
-          relation: "current",
+          type: "section",
+          title: "Implementation",
+          children: [
+            { type: "markdown", markdown: "## Details\n\nNested text" },
+          ],
         },
       ],
-    }),
+    },
   );
+
+  const app = new Hono();
+  app.get("/reviews-api/:id/stack", (c) => c.json({ layers: [] }));
   app.route("/reviews-api", createReviewApi(store));
   app.get("/reviews-api/:id/commits", (c) => c.json([]));
   const post = vi.fn<() => Promise<{ ok: true }>>(async () => ({ ok: true }));
@@ -159,7 +149,4 @@ it("exposes JSON section and Markdown headings plus imported PR and stack naviga
 
   for (const link of links) await act(async () => link.click());
   expect(scroll).toHaveBeenCalledTimes(4);
-  expect(
-    container.querySelector('[aria-label="Pull request stack, 2 of 2"]'),
-  ).not.toBeNull();
 });

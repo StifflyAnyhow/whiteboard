@@ -89,7 +89,8 @@ export class ReviewVerbsService extends Disposable implements IReviewVerbsServic
 		const fromLine = start.lineNumber;
 		const toLine = Math.max(fromLine, end.lineNumber - (end.column === 1 && end.lineNumber > fromLine ? 1 : 0));
 		const rect = editor.getDomNode()?.getBoundingClientRect();
-		const position = editor.getScrolledVisiblePosition(selection.getPosition());
+		const cursor = selection.getPosition();
+		const position = editor.getScrolledVisiblePosition(cursor.lineNumber > toLine ? { lineNumber: toLine, column: model.getLineMaxColumn(toLine) } : cursor);
 		const anchor = rect && position ? { x: rect.left + position.left, y: rect.top + position.top } : undefined;
 		const apiSelection = apiSelectionEvent(model.uri, selection, anchor);
 		if (apiSelection) {
@@ -129,7 +130,7 @@ export class ReviewVerbsService extends Disposable implements IReviewVerbsServic
 					return { ok: true, result: await this.captureScreenshot() };
 				case "openReview": {
 					const review = this.apiCatalog.reviews.find((review) => review.reviewId === request.args.reviewUuid);
-					if (!review) throw new Error("Session not found.");
+					if (!review) throw new Error("Review not found. If this is an old Whiteboard review, ask your agent to migrate your old Whiteboard reviews.");
 					await this.tabsService.openApiReview(review.reviewId, review.title, request.args.active);
 					break;
 				}

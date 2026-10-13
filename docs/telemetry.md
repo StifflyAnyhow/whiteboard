@@ -34,7 +34,7 @@ location during ingestion; our project discards the source IP.
 
 ## Turn telemetry off
 
-In Whiteboard, open **Preferences → Settings** and disable **Share anonymous
+In Whiteboard, open **Settings** and disable **Share anonymous
 usage data**. The setting controls both the app and the `whiteboard` CLI on
 that installation. Disabling it also clears any queued events that have
 not been sent.
@@ -315,7 +315,7 @@ The server checks all properties in this table against
 | `review_bug_report_dialog_opened` | None                                                                                                                                                                           | A user opens the bug report dialog                                                                         |
 | `review_bug_report_cancelled`     | None                                                                                                                                                                           | A user closes the dialog without a report                                                                  |
 | `review_bug_report_send_failed`   | Short `error_name`                                                                                                                                                             | A bug report request fails                                                                                 |
-| `review_setting_changed`          | `setting` in telemetry_enabled, keymap, software_map_enabled, scratchpad_enabled, diffr_config, structural_diff, theme, ctrl_tab, ready_notification, document_width; `enabled`; `value` in dark, light, system (theme only) | A user changes a Whiteboard setting                                                                        |
+| `review_setting_changed`          | `setting` in telemetry_enabled, keymap, software_map_enabled, scratchpad_enabled, diffr_config, structural_diff, theme, ctrl_tab, ready_notification, document_width, code_font_size; `enabled`; `value` in dark, light, system (theme only) | A user changes a Whiteboard setting                                                                        |
 | `review_review_opened`            | `via` in home, other                                                                                                                                                           | A user opens a whiteboard                                                                                  |
 | `review_diff_layout_changed`      | `layout` in split, unified                                                                                                                                                     | A user switches the diff layout                                                                            |
 | `review_home_empty_state_viewed`  | None                                                                                                                                                                           | The empty Home state opens                                                                                 |
@@ -489,7 +489,7 @@ The report payload contains these fields:
 | `diff.files[].deletions`         | Deleted line count                                                            |
 | `diff.files[].patch`             | Unified patch used to resolve the whiteboard's exact CodePeek ranges          |
 | `diagnostics.app_version`        | Whiteboard app version                                                        |
-| `diagnostics.cli_version`        | `@dev.fast/review` package version                                            |
+| `diagnostics.cli_version`        | `@dev.fast/whiteboard` package version                                        |
 | `diagnostics.platform`           | Node platform enum                                                            |
 | `diagnostics.app_session_id`     | Random identifier for the canvas window                                       |
 | `diagnostics.client_error_names` | Last 20 sanitized JavaScript error class names from that canvas session       |

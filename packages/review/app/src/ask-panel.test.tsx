@@ -11,7 +11,8 @@ import {
 } from "./ask-delete";
 import { AskHistoryProvider, useAskHistory } from "./ask-history";
 import { AskHistoryList } from "./ask-history-list";
-import { AskPanelContent } from "./ask-panel";
+import { AskPanelContent, AskReadOnlyThread } from "./ask-panel";
+import { TestCanvasQuery } from "./canvas-query-test-utils";
 import { ReviewSessionProvider } from "./host/review-session";
 import { ReviewPanelProvider, useReviewPanel } from "./review-panel";
 import { testReviewSession } from "./review-session-test-utils";
@@ -75,7 +76,7 @@ function working(container: HTMLElement) {
   );
 }
 
-it("asks the chosen agent, streams its answer, relays a decision, and closes the agent when the panel goes", async () => {
+it("asks the chosen agent, streams its answer, relays a decision, and leaves the agent running when the panel goes", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const session = testReviewSession();
   const header = document.createElement("div");
@@ -91,7 +92,9 @@ it("asks the chosen agent, streams its answer, relays a decision, and closes the
         watches += 1;
         push = (update) =>
           controller.enqueue(
-            new TextEncoder().encode(JSON.stringify(update) + "\n"),
+            new TextEncoder().encode(
+              JSON.stringify({ threadId: "thread", update }) + "\n",
+            ),
           );
       },
     });
@@ -109,7 +112,7 @@ it("asks the chosen agent, streams its answer, relays a decision, and closes the
 
       if (endpoint === "/ask") return Response.json({ threadId: "thread" });
 
-      if (endpoint === "/ask/thread/watch") return new Response(watch());
+      if (endpoint === "/ask/watch") return new Response(watch());
 
       return Response.json({ ok: true }, { status: init?.method ? 200 : 404 });
     });
@@ -209,6 +212,42 @@ it("asks the chosen agent, streams its answer, relays a decision, and closes the
     expect(picker()).toBeNull();
     expect(header.textContent).toBe("Codex");
 
+    // While it answers, Stop stands in for Ask until a follow-up is written,
+    // which goes at once: it joins the turn, or waits for it to end.
+    expect(buttonNamed(container, "Stop")).not.toBeNull();
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )!.set!;
+
+      setValue.call(textarea, "Only on the primary?");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(buttonNamed(container, "Stop")).toBeNull();
+    await act(async () =>
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      ),
+    );
+    expect(posted("/ask/thread/prompt")).toEqual([
+      { question: { text: "Only on the primary?" } },
+    ]);
+    expect(buttonNamed(container, "Stop")).not.toBeNull();
+
+    await act(async () =>
+      push({
+        seq: 4,
+        change: {
+          type: "set",
+          queued: [{ id: "q", text: "Only on the primary?" }],
+        },
+      }),
+    );
+    expect(container.textContent).toContain(
+      "Only on the primary?Sends when Codex finishes",
+    );
+
     const allow = [...container.querySelectorAll("button")].find(
       (button) => button.textContent === "Allow once",
     )!;
@@ -221,7 +260,7 @@ it("asks the chosen agent, streams its answer, relays a decision, and closes the
 
     // Answer text arrives as appends to the entry it belongs to.
     await act(async () =>
-      push({ seq: 4, change: { type: "append", id: "a", text: " Twice." } }),
+      push({ seq: 5, change: { type: "append", id: "a", text: " Twice." } }),
     );
     expect(container.textContent).toContain(
       "Replicas replay the index build. Twice.",
@@ -229,12 +268,12 @@ it("asks the chosen agent, streams its answer, relays a decision, and closes the
 
     // A missing change drops the stream; a new one resyncs from a snapshot.
     await act(async () =>
-      push({ seq: 6, change: { type: "append", id: "a", text: " Lost." } }),
+      push({ seq: 7, change: { type: "append", id: "a", text: " Lost." } }),
     );
     await vi.waitFor(() => expect(watches).toBe(2));
     await act(async () =>
       push({
-        seq: 6,
+        seq: 7,
         snapshot: state({
           agent: "codex",
           agentName: "Codex",
@@ -253,7 +292,8 @@ it("asks the chosen agent, streams its answer, relays a decision, and closes the
     vi.unstubAllGlobals();
   }
 
-  expect(posted("/ask/thread/close")).toEqual(["POST"]);
+  // Closing its Ask ends the agent; the panel going, as with its tab, does not.
+  expect(posted("/ask/thread/close")).toEqual([]);
 });
 
 /** What the document's marks report once they place themselves. */
@@ -297,7 +337,10 @@ it("lists saved conversations, reopens one, and deletes another once confirmed",
   let view: unknown;
 
   function Probe() {
-    view = useReviewPanel(({ ask }) => ask?.view ?? null);
+    view = useReviewPanel(
+      ({ asks, askDocked }) =>
+        asks.find((ask) => ask.key === askDocked)?.view ?? null,
+    );
 
     return null;
   }
@@ -394,13 +437,15 @@ it("shows a refused plan as the answer, and names options the agent offers twice
     if (endpoint === "/ask/saved/open")
       return Response.json({ threadId: "saved" });
 
-    if (endpoint === "/ask/saved/watch")
+    if (endpoint === "/ask/watch")
       return new Response(
         new ReadableStream<Uint8Array>({
           start(controller) {
             push = (update) =>
               controller.enqueue(
-                new TextEncoder().encode(JSON.stringify(update) + "\n"),
+                new TextEncoder().encode(
+                  JSON.stringify({ threadId: "saved", update }) + "\n",
+                ),
               );
           },
         }),
@@ -508,7 +553,11 @@ it("keeps the agent through new versions of the review, and says so when the con
   let stream!: ReadableStreamDefaultController<Uint8Array>;
 
   const push = (update: AskUpdate) =>
-    stream.enqueue(new TextEncoder().encode(JSON.stringify(update) + "\n"));
+    stream.enqueue(
+      new TextEncoder().encode(
+        JSON.stringify({ threadId: "saved", update }) + "\n",
+      ),
+    );
 
   const fetch = vi
     .spyOn(session, "fetch")
@@ -521,7 +570,7 @@ it("keeps the agent through new versions of the review, and says so when the con
       if (endpoint === "/ask/saved/open")
         return Response.json({ threadId: "saved" });
 
-      if (endpoint === "/ask/saved/watch")
+      if (endpoint === "/ask/watch")
         return new Response(
           new ReadableStream<Uint8Array>({
             start(controller) {
@@ -539,7 +588,10 @@ it("keeps the agent through new versions of the review, and says so when the con
   let view: unknown;
 
   function Probe() {
-    view = useReviewPanel(({ ask }) => ask?.view ?? null);
+    view = useReviewPanel(
+      ({ asks, askDocked }) =>
+        asks.find((ask) => ask.key === askDocked)?.view ?? null,
+    );
 
     return null;
   }
@@ -580,7 +632,7 @@ it("keeps the agent through new versions of the review, and says so when the con
     await act(async () => render({ ...session }));
     expect(calls("/ask/saved/close")).toBe(0);
     expect(calls("/ask/saved/open")).toBe(1);
-    expect(calls("/ask/saved/watch")).toBe(1);
+    expect(calls("/ask/watch")).toBe(1);
 
     await act(async () => stream.close());
     await act(async () => new Promise((resolve) => setTimeout(resolve)));
@@ -658,13 +710,15 @@ it("asks with the model and effort the reviewer picks, and switches them between
 
       if (endpoint === "/ask") return Response.json({ threadId: "thread" });
 
-      if (endpoint === "/ask/thread/watch")
+      if (endpoint === "/ask/watch")
         return new Response(
           new ReadableStream<Uint8Array>({
             start(controller) {
               push = (update) =>
                 controller.enqueue(
-                  new TextEncoder().encode(JSON.stringify(update) + "\n"),
+                  new TextEncoder().encode(
+                    JSON.stringify({ threadId: "thread", update }) + "\n",
+                  ),
                 );
             },
           }),
@@ -797,7 +851,7 @@ it("completes the agent's commands after / and the checkout's files after @, and
 
       if (endpoint === "/ask") return Response.json({ threadId: "thread" });
 
-      if (endpoint === "/ask/thread/watch")
+      if (endpoint === "/ask/watch")
         return new Response(new ReadableStream<Uint8Array>());
 
       return Response.json({ ok: true });
@@ -885,7 +939,9 @@ it("says how to sign a signed-out agent back in, and tries again once it is", as
       start(controller) {
         push = (update) =>
           controller.enqueue(
-            new TextEncoder().encode(JSON.stringify(update) + "\n"),
+            new TextEncoder().encode(
+              JSON.stringify({ threadId: "saved", update }) + "\n",
+            ),
           );
       },
     });
@@ -893,7 +949,7 @@ it("says how to sign a signed-out agent back in, and tries again once it is", as
   const fetch = vi
     .spyOn(session, "fetch")
     .mockImplementation(async (endpoint) =>
-      endpoint === "/ask/saved/watch"
+      endpoint === "/ask/watch"
         ? new Response(watch())
         : Response.json({ ok: true }),
     );
@@ -988,7 +1044,7 @@ it("offers a new conversation when one cannot be reopened: one lost before it wa
 
     if (endpoint === "/ask") return Response.json({ threadId: "thread" });
 
-    if (endpoint === "/ask/thread/watch")
+    if (endpoint === "/ask/watch")
       return new Response(
         new ReadableStream<Uint8Array>({
           start(controller) {
@@ -1009,7 +1065,10 @@ it("offers a new conversation when one cannot be reopened: one lost before it wa
   let view: unknown;
 
   function Probe() {
-    view = useReviewPanel(({ ask }) => ask?.view ?? null);
+    view = useReviewPanel(
+      ({ asks, askDocked }) =>
+        asks.find((ask) => ask.key === askDocked)?.view ?? null,
+    );
 
     return null;
   }
@@ -1054,7 +1113,11 @@ it("offers a new conversation when one cannot be reopened: one lost before it wa
     );
 
     const push = (update: AskUpdate) =>
-      stream.enqueue(new TextEncoder().encode(JSON.stringify(update) + "\n"));
+      stream.enqueue(
+        new TextEncoder().encode(
+          JSON.stringify({ threadId: "thread", update }) + "\n",
+        ),
+      );
 
     // The agent never started a session, so Whiteboard saved nothing.
     await act(async () =>
@@ -1108,7 +1171,7 @@ it("stops a conversation while it reopens, and takes no answer to a permission o
       if (endpoint === "/ask/saved/open")
         return Response.json({ threadId: "saved" });
 
-      if (endpoint === "/ask/saved/watch")
+      if (endpoint === "/ask/watch")
         return new Response(
           new ReadableStream<Uint8Array>({
             start(controller) {
@@ -1121,7 +1184,11 @@ it("stops a conversation while it reopens, and takes no answer to a permission o
     });
 
   const push = (update: AskUpdate) =>
-    stream.enqueue(new TextEncoder().encode(JSON.stringify(update) + "\n"));
+    stream.enqueue(
+      new TextEncoder().encode(
+        JSON.stringify({ threadId: "saved", update }) + "\n",
+      ),
+    );
 
   const container = document.createElement("div");
   document.body.append(container);
@@ -1380,6 +1447,53 @@ it("keeps what is written while a question goes, and puts back one that did not"
     await type(textarea, "And on replicas?");
     await act(async () => asks[1]!(Response.json({ threadId: "thread" })));
     expect(textarea.value).toBe("And on replicas?");
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  }
+});
+
+it("shows a saved conversation whose checkout is gone, with nothing to ask", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const session = testReviewSession();
+
+  const fetch = vi.spyOn(session, "fetch").mockImplementation(async () =>
+    Response.json(
+      state({
+        id: "saved",
+        status: "idle",
+        entries: [
+          { kind: "user", id: "q", text: "Is this safe?", at: Date.now() },
+          { kind: "agent", id: "a", text: "Only on Postgres 12 and later." },
+        ],
+      }),
+    ),
+  );
+
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+
+  try {
+    await act(async () =>
+      root.render(
+        <TestCanvasQuery>
+          <ReviewSessionProvider session={session}>
+            <AskReadOnlyThread selection={selection} threadId="saved" />
+          </ReviewSessionProvider>
+        </TestCanvasQuery>,
+      ),
+    );
+    await act(() => new Promise((resolve) => setTimeout(resolve)));
+
+    expect(container.textContent).toContain("Only on Postgres 12 and later.");
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(fetch).not.toHaveBeenCalledWith(
+      "/ask/saved/open",
+      expect.anything(),
+    );
   } finally {
     await act(async () => root.unmount());
     container.remove();

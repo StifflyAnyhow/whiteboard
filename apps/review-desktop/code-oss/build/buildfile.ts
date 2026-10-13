@@ -23,12 +23,11 @@ export const workbenchDesktop = [
 	createModuleDescription('vs/workbench/contrib/debug/node/telemetryApp'),
 	createModuleDescription('vs/platform/files/node/watcher/watcherMain'),
 	createModuleDescription('vs/platform/terminal/node/ptyHostMain'),
-	createModuleDescription('vs/platform/agentHost/node/agentHostMain'),
-	createModuleDescription('vs/platform/agentHost/node/diffWorkerMain'),
 	createModuleDescription('vs/workbench/api/node/extensionHostProcess'),
 	createModuleDescription('vs/review/review.desktop.main'),
 	createModuleDescription('vs/review/navigator.desktop.main'),
-	createModuleDescription('vs/review/electron-utility/reviewDesktopHostMain')
+	createModuleDescription('vs/review/electron-utility/reviewDesktopHostMain'),
+	createModuleDescription('vs/review/node/reviewSshAskpassMain')
 ];
 
 export const keyboardMaps = [

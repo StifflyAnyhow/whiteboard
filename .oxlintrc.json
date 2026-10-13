@@ -24,6 +24,7 @@
     "**/dist/**",
     "**/.vite/**",
     "apps/review-desktop/code-oss/**",
+    "diffr/**",
     ".agent/**",
     ".agents/**",
     ".claude/**",
@@ -46,6 +47,10 @@
         "ignoreCase": false,
         "memberSyntaxSortOrder": ["none", "all", "multiple", "single"]
       }
+    ],
+    "jsx-a11y/label-has-associated-control": [
+      "error",
+      { "controlComponents": ["Checkbox"] }
     ],
     "typescript/no-explicit-any": "off",
     "typescript/no-non-null-assertion": "off",
@@ -147,8 +152,8 @@
         "no-restricted-imports": [
           "error",
           {
-            "paths": ["@dev.fast/review"],
-            "patterns": ["@dev.fast/review/*", "**/review/**"]
+            "paths": ["@dev.fast/whiteboard"],
+            "patterns": ["@dev.fast/whiteboard/*", "**/review/**"]
           }
         ]
       }

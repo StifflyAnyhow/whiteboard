@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -54,6 +55,7 @@ import {
   summarizeEdit,
 } from "./document.js";
 import { pullRequestKey, pullRequestUrl, setPullRequest } from "./origin.js";
+import { initializeReviewStoreSchema } from "./store-schema.js";
 
 const reviewId = z.string().min(1);
 
@@ -82,9 +84,14 @@ export const commandSchema = z.strictObject({
   operation: z.discriminatedUnion("type", [
     z.strictObject({ type: z.literal("delete"), reviewId }),
     z.strictObject({
+      type: z.literal("lifecycle"),
+      reviewId,
+      state: z.enum(["active", "trash"]),
+    }),
+    z.strictObject({
       type: z.literal("attention"),
       reviewId,
-      action: z.enum(["view", "dismiss", "restore"]),
+      action: z.literal("view"),
     }),
     z.strictObject({
       type: z.literal("create"),
@@ -141,19 +148,14 @@ export const commandSchema = z.strictObject({
   ]),
 });
 
-/** How far legacy import has got with a review; the map has its own cursor. */
-export interface LegacyImportProgress {
-  revision: string;
-  mapRevision: string | null;
-  importedAt: string;
-}
-
 /** Source identity displayed in the review header and Home, alongside immutable pins. */
 export interface SnapshotOrigin {
   /** Managed tutorial; readable by ID but excluded from the user catalog. */
   tutorial?: boolean;
   branch?: string;
   baseRef?: string;
+  /** The base the review's target names, such as the branch below it. */
+  baseBranch?: string;
   pullRequestNumber?: number;
   pullRequestUrl?: string;
   /** The legacy review revision this version was imported from. */
@@ -161,6 +163,8 @@ export interface SnapshotOrigin {
 }
 
 export interface Snapshot {
+  /** Current lifecycle state, projected onto every version when read. */
+  trashedAt?: string | null;
   shared?: { login?: string; sharedAt?: number; cloneUrl?: string };
   reviewId: string;
   version: number;
@@ -184,18 +188,6 @@ export interface Snapshot {
   lastEdit?: EditSummary;
 }
 
-/** A whole version written by legacy import: ids are assigned here, sources
- * are checked tolerantly, and attention is applied only for a new review. */
-export interface ImportedVersionInput {
-  reviewId: string;
-  title: string;
-  pins: Pins;
-  document: Block[];
-  createdAt: string;
-  origin?: SnapshotOrigin;
-  attention?: { viewedAt?: string | null; dismissedAt?: string | null };
-}
-
 export interface Result {
   /** Create only: false when an existing review for the same PR came back. */
   created?: boolean;
@@ -217,6 +209,7 @@ export interface Result {
   type?: Element["type"] | "lens";
   children?: WrittenComponent[];
   attention?: true;
+  lifecycle?: true;
   deleted?: true;
   warnings?: string[];
 }
@@ -259,12 +252,6 @@ export interface ReviewProviders {
     options: { peek: boolean },
   ): Promise<void>;
   validateResource(pins: Pins | undefined, block: Block): Promise<void>;
-  /** Import only: report a problem as a warning instead of rejecting. */
-  validateSourceTolerant?(
-    pins: Pins,
-    source: FileLineRange,
-    options: { peek: boolean },
-  ): Promise<string | null>;
 }
 
 /** One instance owned by the desktop server. All writers go through execute().
@@ -280,6 +267,7 @@ export class ReviewStore {
   private readonly liveSources = new Map<string, Snapshot>();
   private refreshTimer?: ReturnType<typeof setInterval>;
   private refreshSubscribers = 0;
+  private readonly purgeTimer: ReturnType<typeof setInterval>;
 
   watchWorktrees(): () => void {
     this.refreshSubscribers++;
@@ -349,6 +337,7 @@ export class ReviewStore {
 
     const run = this.pending.then(async () => {
       for (const summary of this.list()) {
+        if (summary.trashedAt) continue;
         const snapshot = this.read(summary.reviewId, summary.version);
 
         try {
@@ -402,6 +391,7 @@ export class ReviewStore {
   private readonly externalChanges: ReturnType<typeof setInterval>;
   private observedDataVersion: number;
   private observedVersions = new Map<string, number>();
+  private observedDeletions = new Map<string, string>();
   subscribeCatalog(listener: () => void) {
     this.catalogListeners.add(listener);
 
@@ -431,52 +421,19 @@ export class ReviewStore {
   ) {
     // WAL plus a busy timeout: another host on the same home waits instead of failing.
     this.db = new DatabaseSync(databasePath, { timeout: 5000 });
-    this.db.exec(`PRAGMA journal_mode=WAL;
-      PRAGMA foreign_keys=ON;
-      CREATE TABLE IF NOT EXISTS reviews(id TEXT PRIMARY KEY, version INTEGER NOT NULL, next_id INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS versions(review_id TEXT REFERENCES reviews(id), version INTEGER, snapshot TEXT NOT NULL,
-        PRIMARY KEY(review_id,version));
-      DROP TABLE IF EXISTS receipts;`);
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS review_attention(review_id TEXT PRIMARY KEY REFERENCES reviews(id), viewed_at TEXT, dismissed_at TEXT);`,
+    initializeReviewStoreSchema(this.db);
+    this.activity = new ReviewActivity(this.db, (id) =>
+      this.assertWritable(id),
     );
-    this.db
-      .exec(`CREATE TABLE IF NOT EXISTS repositories(id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, name TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS resources(id TEXT PRIMARY KEY, repository_id TEXT NOT NULL REFERENCES repositories(id),
-        kind TEXT NOT NULL, mime_type TEXT NOT NULL, data BLOB NOT NULL);`);
-    this.db.exec(
-      "CREATE TABLE IF NOT EXISTS review_coverage(review_id TEXT REFERENCES reviews(id), file TEXT, fingerprint TEXT NOT NULL, coverage TEXT NOT NULL, PRIMARY KEY(review_id,file));",
-    );
-    this.db.exec("DROP TABLE IF EXISTS review_viewed");
-    this.db.exec(
-      "CREATE TABLE IF NOT EXISTS comparison_stats(identity TEXT PRIMARY KEY, stats TEXT NOT NULL)",
-    );
-    // Import progress lives apart from the editable snapshots: restoring an
-    // older version or deleting the review must not look like an unfinished
-    // import to the next sweep.
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS legacy_imports(review_id TEXT PRIMARY KEY, revision TEXT NOT NULL, map_revision TEXT, imported_at TEXT NOT NULL);`,
-    );
-    // One row: which machine this store is. Review ids never contain it.
-    this.db.exec(
-      "CREATE TABLE IF NOT EXISTS server_identity(one INTEGER PRIMARY KEY CHECK(one=1), id TEXT NOT NULL)",
-    );
-    // Batch authoring's scratch drafts were removed; drop their leftover table.
-    this.db.exec("DROP TABLE IF EXISTS authoring_drafts");
-    this.activity = new ReviewActivity(this.db, (id) => this.assertExists(id));
     this.askHistory = new AskHistory(this.db);
 
-    // Homes written before map resumption lack the column.
-    if (
-      !this.db
-        .prepare("PRAGMA table_info(legacy_imports)")
-        .all()
-        .some((column) => String(column.name) === "map_revision")
-    )
-      this.db.exec("ALTER TABLE legacy_imports ADD COLUMN map_revision TEXT");
+    this.purgeExpired();
+    this.purgeTimer = setInterval(() => this.purgeExpired(), 60_000);
+    this.purgeTimer.unref();
 
     this.observedDataVersion = this.dataVersion();
     this.observedVersions = this.currentVersions();
+    this.observedDeletions = this.currentDeletions();
     this.externalChanges = setInterval(
       () => this.refreshExternalChanges(),
       250,
@@ -497,6 +454,16 @@ export class ReviewStore {
     );
   }
 
+  private currentDeletions() {
+    return new Map(
+      this.db
+        .prepare(
+          "SELECT review_id,deleted_at FROM review_attention WHERE deleted_at IS NOT NULL",
+        )
+        .all()
+        .map((row) => [String(row.review_id), String(row.deleted_at)]),
+    );
+  }
   private refreshExternalChanges() {
     const version = this.dataVersion();
 
@@ -504,11 +471,22 @@ export class ReviewStore {
     this.observedDataVersion = version;
     const current = this.currentVersions();
     const previous = this.observedVersions;
+    const deletions = this.currentDeletions();
+    const previousDeletions = this.observedDeletions;
+    this.observedDeletions = deletions;
     this.observedVersions = current;
 
-    for (const [reviewId, savedVersion] of current)
+    for (const [reviewId, savedVersion] of current) {
       if (previous.get(reviewId) !== savedVersion)
         this.notify({ reviewId, version: savedVersion });
+      else if (previousDeletions.get(reviewId) !== deletions.get(reviewId))
+        this.notify({
+          reviewId,
+          version: savedVersion,
+          lifecycle: true,
+          attention: true,
+        });
+    }
 
     for (const [reviewId, savedVersion] of previous)
       if (!current.has(reviewId)) {
@@ -553,10 +531,11 @@ export class ReviewStore {
     files: { path: string; fingerprint: string; scope: Coverage }[],
     viewed: boolean,
   ): void {
-    this.assertExists(reviewId);
+    this.assertWritable(reviewId);
     this.db.exec("BEGIN IMMEDIATE");
 
     try {
+      this.assertWritable(reviewId);
       const current = this.viewedCoverage(reviewId);
 
       for (const file of files) {
@@ -583,38 +562,6 @@ export class ReviewStore {
       throw error;
     }
   }
-  /** The last legacy revisions imported for a review, kept after deletion. */
-  legacyImport(reviewId: string): LegacyImportProgress | null {
-    const row = this.db
-      .prepare(
-        "SELECT revision,map_revision,imported_at FROM legacy_imports WHERE review_id=?",
-      )
-      .get(reviewId);
-
-    return row
-      ? {
-          revision: String(row.revision),
-          mapRevision:
-            row.map_revision === null ? null : String(row.map_revision),
-          importedAt: String(row.imported_at),
-        }
-      : null;
-  }
-  recordLegacyImport(
-    reviewId: string,
-    progress: Omit<LegacyImportProgress, "importedAt">,
-  ) {
-    this.db
-      .prepare(
-        "INSERT INTO legacy_imports(review_id,revision,map_revision,imported_at) VALUES(?,?,?,?) ON CONFLICT(review_id) DO UPDATE SET revision=excluded.revision,map_revision=excluded.map_revision,imported_at=excluded.imported_at",
-      )
-      .run(
-        reviewId,
-        progress.revision,
-        progress.mapRevision,
-        new Date().toISOString(),
-      );
-  }
   private readonly repositoryGroups = new Map<
     string,
     ReviewApiSummary["repositoryGroup"]
@@ -622,6 +569,9 @@ export class ReviewStore {
 
   private repositoryGroup(root: string): ReviewApiSummary["repositoryGroup"] {
     if (this.repositoryGroups.has(root)) return this.repositoryGroups.get(root);
+
+    // Resolving a missing checkout would spawn on every listing.
+    if (!existsSync(root)) return undefined;
 
     const context = resolveRepoContextSync(root);
 
@@ -722,6 +672,7 @@ export class ReviewStore {
     this.closing = true;
     clearInterval(this.externalChanges);
     clearInterval(this.refreshTimer);
+    clearInterval(this.purgeTimer);
     await this.pending;
     this.listeners.clear();
     this.catalogListeners.clear();
@@ -756,7 +707,66 @@ export class ReviewStore {
   /** The 404 check alone, without loading a snapshot. */
   assertExists(id: string) {
     if (!this.db.prepare("SELECT 1 FROM reviews WHERE id=?").get(id))
-      throw new ReviewInputError("Review not found.", 404);
+      throw new ReviewInputError(
+        "Review not found. If this is an old Whiteboard review, ask your agent to migrate your old Whiteboard reviews.",
+        404,
+      );
+  }
+  assertWritable(id: string) {
+    this.assertExists(id);
+    const trashedAt = this.trashTime(id);
+
+    if (trashedAt)
+      throw new ReviewInputError(
+        `This whiteboard was moved to Trash on ${new Date(trashedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}. Restore it with session_lifecycle({"sessionId":"${id}","state":"active"}) to continue.`,
+        409,
+      );
+  }
+  private trashTime(id: string): string | null {
+    const row = this.db
+      .prepare("SELECT deleted_at FROM review_attention WHERE review_id=?")
+      .get(id);
+
+    return row?.deleted_at ? String(row.deleted_at) : null;
+  }
+  private removePermanently(id: string) {
+    for (const table of [
+      "ask_conversations",
+      "authoring_presences",
+      "review_coverage",
+      "review_attention",
+      "versions",
+    ])
+      this.db.prepare(`DELETE FROM ${table} WHERE review_id=?`).run(id);
+    this.db.prepare("DELETE FROM reviews WHERE id=?").run(id);
+    this.liveSources.delete(id);
+  }
+  private purgeExpired() {
+    const cutoff = new Date(Date.now() - 30 * 86400000).toISOString();
+    const expired: Result[] = [];
+    this.db.exec("BEGIN IMMEDIATE");
+
+    try {
+      for (const row of this.db
+        .prepare(
+          "SELECT review_id,version FROM review_attention JOIN reviews ON reviews.id=review_id WHERE deleted_at <= ?",
+        )
+        .all(cutoff)) {
+        const reviewId = String(row.review_id);
+        expired.push({ reviewId, version: Number(row.version), deleted: true });
+        this.removePermanently(reviewId);
+      }
+
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    for (const result of expired) {
+      this.activity.deleted(result.reviewId);
+      this.notify(result);
+    }
   }
   read(id: string, version?: number): Snapshot {
     const row =
@@ -772,7 +782,10 @@ export class ReviewStore {
             )
             .get(id, version);
 
-    if (!row) throw new ReviewInputError("Review or version not found.", 404);
+    if (!row) {
+      this.assertExists(id);
+      throw new ReviewInputError("Review version not found.", 404);
+    }
 
     // SAFETY: versions contains only snapshots validated by execute before committing.
     const snapshot = JSON.parse(String(row.snapshot)) as Snapshot;
@@ -805,7 +818,10 @@ export class ReviewStore {
       };
     const live = version === undefined ? this.liveSources.get(id) : undefined;
 
-    if (live?.version === snapshot.version) return structuredClone(live);
+    if (live?.version === snapshot.version)
+      return { ...structuredClone(live), trashedAt: this.trashTime(id) };
+
+    snapshot.trashedAt = this.trashTime(id);
 
     return snapshot;
   }
@@ -858,7 +874,7 @@ export class ReviewStore {
       .prepare(
         `SELECT json_remove(versions.snapshot,'$.document') AS summary,
           (SELECT json_extract(first.snapshot,'$.createdAt') FROM versions AS first WHERE first.review_id=reviews.id ORDER BY first.version LIMIT 1) AS first_created_at,
-          review_attention.viewed_at, review_attention.dismissed_at, repositories.name AS repository_name, repositories.path AS repository_path
+          review_attention.viewed_at, review_attention.deleted_at, repositories.name AS repository_name, repositories.path AS repository_path
         FROM reviews
         JOIN versions ON versions.review_id=reviews.id AND versions.version=reviews.version
         LEFT JOIN review_attention ON review_attention.review_id=reviews.id
@@ -906,7 +922,7 @@ export class ReviewStore {
             ? String(row.repository_name)
             : (summary.pins?.repositoryId ?? ""),
           viewedAt: row.viewed_at ? String(row.viewed_at) : null,
-          dismissedAt: row.dismissed_at ? String(row.dismissed_at) : null,
+          trashedAt: row.deleted_at ? String(row.deleted_at) : null,
           working: this.activity.isWorking(summary.reviewId),
         };
 
@@ -1009,6 +1025,14 @@ export class ReviewStore {
 
     const run = this.pending.then(async () => {
       const op = command.operation;
+      this.purgeExpired();
+
+      if (
+        op.type !== "create" &&
+        op.type !== "delete" &&
+        op.type !== "lifecycle"
+      )
+        this.assertWritable(op.reviewId);
 
       // The scratchpad is edited and restored like a review, and nothing else.
       if (
@@ -1078,6 +1102,14 @@ export class ReviewStore {
       }
 
       if (op.type === "delete") {
+        this.assertExists(op.reviewId);
+
+        if (!this.trashTime(op.reviewId))
+          throw new ReviewInputError(
+            "Move this whiteboard to Trash before deleting it.",
+            409,
+          );
+
         const result: Result = {
           reviewId: op.reviewId,
           version: this.read(op.reviewId).version,
@@ -1086,30 +1118,21 @@ export class ReviewStore {
 
         this.commitCommand(
           result,
-          () => {
-            for (const table of [
-              "ask_conversations",
-              "authoring_presences",
-              "review_coverage",
-              "review_attention",
-              "versions",
-            ])
-              this.db
-                .prepare(`DELETE FROM ${table} WHERE review_id=?`)
-                .run(op.reviewId);
-            this.db.prepare("DELETE FROM reviews WHERE id=?").run(op.reviewId);
-          },
+          () => this.removePermanently(op.reviewId),
           () => this.assertMutation(op.reviewId, result.version),
         );
 
         return result;
       }
 
-      if (op.type === "attention") {
+      if (op.type === "attention" || op.type === "lifecycle") {
         const result: Result = {
           reviewId: op.reviewId,
           version: this.read(op.reviewId).version,
           attention: true,
+          ...(op.type === "lifecycle" && {
+            lifecycle: true as const,
+          }),
         };
 
         this.commitCommand(result, () => {
@@ -1119,21 +1142,22 @@ export class ReviewStore {
             )
             .run(op.reviewId);
 
-          if (op.action === "view")
+          if (op.type === "attention")
             this.db
               .prepare(
                 "UPDATE review_attention SET viewed_at=? WHERE review_id=?",
               )
               .run(new Date().toISOString(), op.reviewId);
-          else
+          else {
+            const timestamp =
+              op.state === "trash" ? new Date().toISOString() : null;
+
             this.db
               .prepare(
-                "UPDATE review_attention SET dismissed_at=? WHERE review_id=?",
+                "UPDATE review_attention SET deleted_at=CASE WHEN ? IS NULL THEN NULL ELSE COALESCE(deleted_at, ?) END WHERE review_id=?",
               )
-              .run(
-                op.action === "dismiss" ? new Date().toISOString() : null,
-                op.reviewId,
-              );
+              .run(timestamp, timestamp, op.reviewId);
+          }
         });
 
         return result;
@@ -1152,6 +1176,8 @@ export class ReviewStore {
         op.type === "create"
           ? createdSnapshot(id, op, resolvedTarget, fromPullRequest?.title)
           : structuredClone(previous!);
+
+      delete snapshot.trashedAt;
 
       // Overlay state: a degraded read must not persist unavailability.
       delete snapshot.sourceUnavailable;
@@ -1185,6 +1211,17 @@ export class ReviewStore {
           snapshot.origin = { ...snapshot.origin, branch };
         }
       }
+
+      // A base named rather than given as a commit; a stacked review names
+      // the branch below it.
+      if (requestedTarget)
+        snapshot.origin = {
+          ...snapshot.origin,
+          baseBranch:
+            requestedTarget.base === resolvedTarget?.pins.base
+              ? undefined
+              : requestedTarget.base,
+        };
 
       switch (op.type) {
         case "create":
@@ -1327,11 +1364,6 @@ export class ReviewStore {
         ...(applied?.children && { children: applied.children }),
       };
 
-      if (snapshot.staleSources?.length)
-        warnings.push(
-          "Some authored source ranges changed. Update their references before presenting this review.",
-        );
-
       if (warnings.length) result.warnings = warnings;
 
       this.commitCommand(
@@ -1348,7 +1380,12 @@ export class ReviewStore {
             )
             .run(id, snapshot.version, JSON.stringify(snapshot));
         },
-        previous ? () => this.assertMutation(id, previous.version) : undefined,
+        previous
+          ? () => {
+              this.assertWritable(id);
+              this.assertMutation(id, previous.version);
+            }
+          : undefined,
         op.type === "edit" || op.type === "lens_edit"
           ? {
               surface: op.type === "edit" ? "document" : "lenses",
@@ -1388,6 +1425,14 @@ export class ReviewStore {
         ? []
         : this.reviewsForPullRequest(op.pullRequestUrl);
 
+    if (existing) {
+      try {
+        this.assertReusableReview(existing);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
+
     return this.providers.resolvePullRequest(op.pullRequestUrl, {
       id: op.repositoryId,
       preferred: existing && this.read(existing).pins?.repositoryId,
@@ -1406,6 +1451,13 @@ export class ReviewStore {
       .all(pullRequestKey(url))
       .map((row) => String(row.id));
   }
+  private assertReusableReview(reviewId: string) {
+    if (this.trashTime(reviewId))
+      throw new ReviewInputError(
+        `This PR's whiteboard is in Trash. Restore it to continue:\n\nsession_lifecycle({"sessionId":"${reviewId}","state":"active"})`,
+        409,
+      );
+  }
   /** The answer to a create that found its PR's review. Its target stays:
    * moving it would silently point existing links at different code. */
   private existingReview(
@@ -1414,6 +1466,8 @@ export class ReviewStore {
     requested: Pins,
   ): Result {
     const snapshot = this.read(reviewId);
+
+    this.assertReusableReview(reviewId);
 
     const headMoved =
       snapshot.pins?.repositoryId !== requested.repositoryId ||
@@ -1504,7 +1558,7 @@ export class ReviewStore {
     else if (!result.attention)
       this.observedVersions.set(result.reviewId, result.version);
 
-    if (!result.attention)
+    if (!result.attention || result.lifecycle)
       for (const listener of this.listeners)
         try {
           listener(result);
@@ -1519,11 +1573,11 @@ export class ReviewStore {
         // The saved command must remain successful if a viewer disconnects.
       }
   }
-  /** Dismissed reviews, as Home lists them; only a restore clears it, not a view. */
-  dismissedIds(): string[] {
+  /** Viewing a review in Trash does not restore it. */
+  trashedIds(): string[] {
     return this.db
       .prepare(
-        "SELECT review_id FROM review_attention WHERE dismissed_at IS NOT NULL",
+        "SELECT review_id FROM review_attention WHERE deleted_at IS NOT NULL",
       )
       .all()
       .map((row) => String(row.review_id));
@@ -1533,165 +1587,6 @@ export class ReviewStore {
       this.db.prepare("SELECT 1 FROM reviews WHERE id=?").get(reviewId) !==
       undefined
     );
-  }
-  /** Legacy import of one version. See `importVersions`. */
-  importVersion(
-    input: ImportedVersionInput,
-  ): Promise<{ version: number; warnings: string[] }> {
-    return this.importVersions([input]);
-  }
-  /** Legacy import: every version is validated first, then all rows land in
-   * one transaction, so a failure leaves no partial review. A new review
-   * starts at version 0; an existing one continues its numbering. The last
-   * input's `origin.revision` becomes the review's import cursor. */
-  importVersions(
-    inputs: ImportedVersionInput[],
-    options: { preserveCurrent?: Snapshot; revision?: string } = {},
-  ): Promise<{ version: number; warnings: string[] }> {
-    if (this.closing)
-      return Promise.reject(new Error("Review store is closing."));
-
-    const reviewId = inputs[0]?.reviewId ?? options.preserveCurrent?.reviewId;
-
-    if (!reviewId) return Promise.reject(new Error("Nothing to import."));
-
-    if (
-      inputs.some((input) => input.reviewId !== reviewId) ||
-      (options.preserveCurrent && options.preserveCurrent.reviewId !== reviewId)
-    )
-      return Promise.reject(new Error("Import versions of one review only."));
-
-    const run = this.pending.then(async () => {
-      const existing = this.db
-        .prepare("SELECT version,next_id FROM reviews WHERE id=?")
-        .get(reviewId);
-
-      let nextId = existing ? Number(existing.next_id) : 0;
-      let version = existing ? Number(existing.version) : -1;
-      const snapshots: Snapshot[] = [];
-      const warnings: string[] = [];
-
-      for (const input of inputs) {
-        const document = structuredClone(
-          documentSchema.parse(migrateStoredDocument(input.document)),
-        );
-
-        for (const block of document)
-          assignFreshIds(block, (prefix) => `${prefix}-${++nextId}`);
-        checkReferences(document);
-        await this.providers.validatePins(input.pins);
-
-        const seen = new Set<string>();
-
-        for (const { source, peek } of sourceReferences(document, {
-          tolerant: true,
-        })) {
-          const key = JSON.stringify(source);
-
-          if (seen.has(key)) continue;
-          seen.add(key);
-
-          const warning = this.providers.validateSourceTolerant
-            ? await this.providers.validateSourceTolerant(
-                anchorPins(source, input.pins),
-                source,
-                { peek: peek === true },
-              )
-            : null;
-
-          if (warning) warnings.push(warning);
-        }
-
-        for (const block of resourceReferences(document))
-          await this.providers.validateResource(input.pins, block);
-
-        version += 1;
-
-        const snapshot: Snapshot = {
-          reviewId,
-          version,
-          title: input.title,
-          pins: input.pins,
-          target: { kind: "commits", ...input.pins },
-          document,
-          createdAt: input.createdAt,
-        };
-
-        if (input.origin) snapshot.origin = input.origin;
-        snapshots.push(snapshot);
-      }
-
-      // Backfilling sealed history must not replace an edited JSON document.
-      // Keep all existing version numbers and element IDs stable.
-      if (existing && options.preserveCurrent) {
-        if (options.preserveCurrent.version !== Number(existing.version))
-          throw new ReviewInputError("Review changed during migration.", 409);
-
-        const document = documentSchema.parse(
-          migrateStoredDocument(options.preserveCurrent.document),
-        );
-
-        snapshots.push({
-          ...options.preserveCurrent,
-          document,
-          version: ++version,
-        });
-      }
-
-      const attention = inputs[0]?.attention;
-      this.db.exec("BEGIN IMMEDIATE");
-
-      try {
-        this.assertMutation(
-          reviewId,
-          existing ? Number(existing.version) : undefined,
-        );
-        this.db
-          .prepare(
-            "INSERT INTO reviews(id,version,next_id) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version,next_id=excluded.next_id",
-          )
-          .run(reviewId, version, nextId);
-
-        for (const snapshot of snapshots)
-          this.db
-            .prepare(
-              "INSERT INTO versions(review_id,version,snapshot) VALUES(?,?,?)",
-            )
-            .run(reviewId, snapshot.version, JSON.stringify(snapshot));
-
-        if (!existing && attention)
-          this.db
-            .prepare(
-              "INSERT INTO review_attention(review_id,viewed_at,dismissed_at) VALUES(?,?,?)",
-            )
-            .run(
-              reviewId,
-              attention.viewedAt ?? null,
-              attention.dismissedAt ?? null,
-            );
-
-        const cursor = options.revision ?? inputs.at(-1)?.origin?.revision;
-
-        // The importer records the map once it knows whether it landed.
-        if (cursor)
-          this.recordLegacyImport(reviewId, {
-            revision: cursor,
-            mapRevision: null,
-          });
-        this.db.exec("COMMIT");
-      } catch (error) {
-        this.db.exec("ROLLBACK");
-        throw error;
-      }
-
-      this.notify({ reviewId, version });
-
-      return { version, warnings: [...new Set(warnings)] };
-    });
-
-    this.pending = run.catch(() => {});
-
-    return run;
   }
   private async validateExternal(
     snapshot: Snapshot,

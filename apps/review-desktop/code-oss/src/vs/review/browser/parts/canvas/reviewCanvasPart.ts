@@ -41,9 +41,11 @@ import type {
 import { EditorPaneSelectionChangeReason } from "../../../../workbench/common/editor.js";
 import type { IEditorGroup } from "../../../../workbench/services/editor/common/editorGroupsService.js";
 import { IHostService } from "../../../../workbench/services/host/browser/host.js";
-import { ILifecycleService } from "../../../../workbench/services/lifecycle/common/lifecycle.js";
+import { isMacintosh } from "../../../../base/common/platform.js";
+import { ILifecycleService, ShutdownReason } from "../../../../workbench/services/lifecycle/common/lifecycle.js";
 import { IWorkbenchLayoutService, Parts } from "../../../../workbench/services/layout/browser/layoutService.js";
 import {
+	EDITOR_FONT_SIZE_SETTING,
 	REVIEW_CTRL_TAB_SETTING,
 	REVIEW_OPEN_FILES_IN_APPLICATION_SETTING,
 	REVIEW_OPEN_FILES_IN_CHOICES,
@@ -56,7 +58,7 @@ import {
 	REVIEW_STRUCTURAL_DIFF_SETTING,
 	REVIEW_TELEMETRY_SETTING,
 } from "../../../common/reviewConfigurationDefaults.js";
-import { resolveReviewSourceView, reviewSourceAnchor, type ReviewSourceView, type ReviewSourceSelection } from "../../../common/reviewProtocol.js";
+import { homeSessions, resolveReviewSourceView, reviewSourceAnchor, type ReviewSourceView, type ReviewSourceSelection } from "../../../common/reviewProtocol.js";
 import type {
 	ReviewCanvasBridge,
 	ReviewCanvasContent,
@@ -83,15 +85,18 @@ import type {
 } from "../../../common/reviewProtocol.js";
 import {
 	parseReviewVerbRequest,
+	SCRATCHPAD_REVIEW_ID,
 	REVIEW_CANVAS_RESUME_EVENT,
 	REVIEW_TUTORIAL_PROGRESS_STORAGE_KEY,
 	REVIEW_TUTORIAL_STEP_IDS
 } from "../../../common/reviewProtocol.js";
 import { IReviewVerbsService } from "../../../contrib/verbs/reviewVerbs.js";
+import { vetoStoppingAskAgents } from "../../reviewAskShutdown.js";
 import { confirmReviewDeletion } from "../../reviewDeleteConfirmation.js";
+import { showReviewNotification } from "../../reviewNotification.js";
 import { showReviewCanvasMenu } from "../../reviewCanvasMenu.js";
 import { ReviewTooltip } from "../../reviewTooltip.js";
-import { IReviewApiCatalogService } from "../../../services/reviewApiCatalogService.js";
+import { IReviewApiCatalogService, REVIEW_HAS_PUBLISHED_BOARD } from "../../../services/reviewApiCatalogService.js";
 import { IReviewApiSourceService } from "../../../services/reviewApiSourceService.js";
 import { IReviewCanvasEditorTabsService } from "../../../services/reviewCanvasEditorTabsService.js";
 import { IReviewDesktopConnectionService } from "../../../services/reviewDesktopConnectionService.js";
@@ -101,12 +106,15 @@ import {
 	reviewEmbeddedSelectionFromOptions,
 } from "../../../services/reviewEmbeddedNavigation.js";
 import { ReviewEmbeddedEditors } from "../../../services/reviewEmbeddedEditors.js";
+import { homeViewFromOptions, ReviewHomeSelection } from "../../../services/reviewHomeNavigation.js";
 import { IReviewTelemetryService } from "../../../services/reviewTelemetryService.js";
 
 import "../../media/review.css";
 import { ReviewSessionTelemetry } from "../../reviewSessionTelemetry.js";
 import { applyReviewThemeChoice, currentReviewThemeChoice } from "../../reviewThemeChoice.js";
 import { ReviewCanvasEditorInput } from "./reviewCanvasEditorInput.js";
+import { remoteEntry, withRemoteEntry } from "./reviewRemoteEntry.js";
+import { reviewRemoteHostsSettings } from "../../reviewRemoteHostsSettings.js";
 
 interface ReviewCanvasAssetsModule extends ReviewCanvasModule {
 	readonly clearReviewViewState: (config: ReviewRuntimeConfig) => void;
@@ -150,6 +158,8 @@ function embeddedSelectionChangeReason(event: ICursorPositionChangedEvent): Edit
 }
 
 export class ReviewCanvasEditorPane extends EditorPane {
+	private homeView: "active" | "trash" = "active";
+	private renderHome: (() => Promise<void>) | undefined;
 	static readonly ID = ReviewCanvasEditorInput.EDITOR_ID;
 
 	private readonly canvas = this._register(new MutableDisposable<ReviewCanvasHandle>());
@@ -212,12 +222,39 @@ export class ReviewCanvasEditorPane extends EditorPane {
 		);
 		// A clean quit ends the open session before the server would reconcile it as abnormal.
 		this._register(lifecycleService.onWillShutdown(() => this.sessionTelemetry.end("app_quit")));
+		// Quitting stops the review server and the agents answering in Ask; the
+		// reviewer chooses. Elsewhere than macOS, closing the last window quits.
+		// A reload leaves them running, to reopen.
+		this._register(
+			lifecycleService.onBeforeShutdown((event) => {
+				const action =
+					event.reason === ShutdownReason.QUIT
+						? "Quit"
+						: event.reason === ShutdownReason.CLOSE && !isMacintosh
+							? "Close"
+							: undefined;
+				if (!action) return;
+				event.veto(
+					this.desktopConnection
+						.workingAskAgents()
+						.catch(() => [])
+						.then((agents) => vetoStoppingAskAgents(this.dialogService, agents, action)),
+					"review.askAgentsWorking",
+				);
+			}),
+		);
 		this._register(toDisposable(() => this.sessionTelemetry.end("closed")));
 		let catalog = this.apiCatalog.reviews;
 		this._register(this.apiCatalog.onDidChange(() => {
 			const previous = catalog;
 			catalog = this.apiCatalog.reviews;
 			this.sessionTelemetry.catalogChanged(previous, catalog);
+			const content = this.apiContent;
+			const updated = content && withRemoteEntry(content, catalog.find((review) => review.reviewId === content.reviewId));
+			if (updated) {
+				this.apiContent = updated;
+				this.canvas.value?.update(updated);
+			}
 		}));
 		this.inlineEditors = this._register(reviewInstantiationService.createInstance(ReviewEmbeddedEditors));
 		this.refreshProgress = this._register(new LongRunningOperation(editorProgressService));
@@ -349,6 +386,15 @@ export class ReviewCanvasEditorPane extends EditorPane {
 		this.restoreEmbeddedSelection(options);
 		try {
 			await this.desktopConnection.initialize();
+			if (input.target.kind === "api" && input.target.reviewId !== SCRATCHPAD_REVIEW_ID) {
+				const { reviewId } = input.target;
+				await this.apiCatalog.initialize();
+				if (generation !== this.loadGeneration || token.isCancellationRequested) return;
+				if (this.apiCatalog.reviews.find(review => review.reviewId === reviewId)?.trashedAt) {
+					throw new Error("This whiteboard is in Trash. Restore it from Home before opening it.");
+				}
+				await this.apiCatalog.attention(reviewId, "view");
+			}
 		} catch (error) {
 			if (generation === this.loadGeneration && !token.isCancellationRequested) {
 				await this.renderError(error, generation);
@@ -386,9 +432,6 @@ export class ReviewCanvasEditorPane extends EditorPane {
 				this.renderedInput = input;
 				this.setCanvasState("active", reviewId);
 				this.sessionTelemetry.start(reviewId);
-				void this.apiCatalog
-					.attention(reviewId, "view")
-					.catch((error) => this.logService.warn("[Whiteboard] Could not mark session viewed:", error));
 				let sourceSelection: ReviewSourceSelection = { reviewId, kind: "current" };
 				let sourceView: ReviewSourceView = resolveReviewSourceView({ reviewId, version: 0, pins: {} });
 				const source = this.apiSource.canvas(() => sourceView, this.inlineEditors, this.diffViews);
@@ -421,6 +464,7 @@ export class ReviewCanvasEditorPane extends EditorPane {
 						},
 						kind: "api",
 						reviewId,
+						...remoteEntry(this.apiCatalog.reviews.find((review) => review.reviewId === reviewId)),
 						structuralDiffEnabled: this.currentStructuralDiffEnabled(),
 						softwareMapEnabled: this.currentSoftwareMapEnabled(),
 						documentWidth: this.currentDocumentWidth(),
@@ -480,6 +524,7 @@ export class ReviewCanvasEditorPane extends EditorPane {
 			return;
 		}
 		if (input.target.kind === "home") {
+			this.homeView = homeViewFromOptions(options) ?? this.homeView;
 			this.renderedInput = input;
 			this.setCanvasState("home");
 			await this.apiCatalog.initialize();
@@ -492,11 +537,11 @@ export class ReviewCanvasEditorPane extends EditorPane {
 			const renderHome = async () => {
 				const seq = ++renderSeq;
 				const reviews = this.apiCatalog.reviews;
-				const isEmpty = reviews.length === 0;
-				// Only the Welcome rail needs install status; the list must
-				// render without waiting on it. One fetch serves both the
-				// install card and the onboarding rail.
-				const install = isEmpty ? await this.resolveInstallContent() : undefined;
+				// Home shows Welcome when no session is listed; the scratchpad
+				// is not one, so the rail still gets install status beside it.
+				const isEmpty = homeSessions(reviews).length === 0;
+				// Small catalogs can show setup progress on Home.
+				const install = homeSessions(reviews).length < 5 ? await this.resolveInstallContent() : undefined;
 				if (seq !== renderSeq) return;
 				if (isEmpty && !emptyStateVisible) {
 					this.reviewTelemetryService.capture("home_empty_state_viewed");
@@ -512,20 +557,30 @@ export class ReviewCanvasEditorPane extends EditorPane {
 				return this.render(
 					{
 						kind: "home",
+						view: this.homeView,
+						navigate: view => {
+							if (this.homeView === view) return;
+							this.homeView = view;
+							void renderHome();
+							this._onDidChangeSelection.fire({ reason: EditorPaneSelectionChangeReason.NAVIGATION });
+						},
+						openSettings: () => { void this.tabsService.openSettings(true); },
+						openSetup: () => { void this.tabsService.openWelcome(true); },
 						reviews,
 						openReview: (uuid) => void openReview(uuid),
+						trashReview: (uuid) => {
+							this.reviewTelemetryService.capture("review_deleted", { via: "home" });
+							return this.apiCatalog.trashReview(uuid);
+						},
 						deleteReview: (uuid) => {
 							this.reviewTelemetryService.capture("review_deleted", { via: "home" });
 							return this.apiCatalog.deleteReview(uuid);
 						},
-						dismissReview: (uuid) => {
-							this.reviewTelemetryService.capture("review_dismissed", { via: "home" });
-							return this.apiCatalog.attention(uuid, "dismiss");
-						},
 						restoreReview: (uuid) => {
 							this.reviewTelemetryService.capture("review_restored", { via: "home" });
-							return this.apiCatalog.attention(uuid, "restore");
+							return this.apiCatalog.lifecycle(uuid, "active");
 						},
+						hostStates: () => this.desktopConnection.readRemoteHosts(),
 						openSourceTree: (uuid) => {
 							const api = this.apiCatalog.reviews.find((review) => review.reviewId === uuid);
 							if (api) {
@@ -533,7 +588,7 @@ export class ReviewCanvasEditorPane extends EditorPane {
 								return;
 							}
 						},
-						// Home shows the Welcome rail while the list is empty.
+						// Home shows setup progress for small catalogs.
 						install,
 						setupActions: this.setupActions(),
 						onboarding: install ? this.resolveOnboarding(install.status) : undefined,
@@ -542,6 +597,7 @@ export class ReviewCanvasEditorPane extends EditorPane {
 					generation,
 				);
 			};
+			this.renderHome = renderHome;
 			// Home stays live while it is the rendered input: a deletion or a
 			// newly published review re-renders the list. render() drops stale
 			// generations once another input starts loading.
@@ -599,6 +655,7 @@ export class ReviewCanvasEditorPane extends EditorPane {
 	}
 
 	override async clearInput(): Promise<void> {
+		this.renderHome = undefined;
 		this.canvasMenu.clear();
 		// Keep apiContent with the mounted canvas so resuming it preserves its review identity.
 		// render() replaces both when another input is shown.
@@ -638,10 +695,16 @@ export class ReviewCanvasEditorPane extends EditorPane {
 
 	override setOptions(options: IEditorOptions | undefined): void {
 		super.setOptions(options);
+		const homeView = homeViewFromOptions(options);
+		if (this.input instanceof ReviewCanvasEditorInput && this.input.target.kind === "home" && homeView && homeView !== this.homeView) {
+			this.homeView = homeView;
+			void this.renderHome?.();
+		}
 		this.restoreEmbeddedSelection(options);
 	}
 
 	getSelection(): IEditorPaneSelection | undefined {
+		if (this.input instanceof ReviewCanvasEditorInput && this.input.target.kind === "home") return new ReviewHomeSelection(this.homeView);
 		const editor = this.inlineEditors.selectionCodeEditor;
 		const position = editor?.getPosition();
 		const model = editor?.getModel();
@@ -830,6 +893,15 @@ export class ReviewCanvasEditorPane extends EditorPane {
 				await this.configurationService.updateValue(REVIEW_DOCUMENT_WIDTH_SETTING, choice, ConfigurationTarget.USER);
 				return this.currentDocumentWidth();
 			},
+			codeFontSize: this.currentCodeFontSize(),
+			setCodeFontSize: async (size) => {
+				this.reviewTelemetryService.capture("setting_changed", {
+					setting: "code_font_size",
+					enabled: size !== 12,
+				});
+				await this.configurationService.updateValue(EDITOR_FONT_SIZE_SETTING, size, ConfigurationTarget.USER);
+				return this.currentCodeFontSize();
+			},
 			readyNotification: this.currentReadyNotification(),
 			setReadyNotification: async (choice) => {
 				this.reviewTelemetryService.capture("setting_changed", {
@@ -869,6 +941,11 @@ export class ReviewCanvasEditorPane extends EditorPane {
 				);
 				return this.currentStructuralDiffEnabled();
 			},
+			remoteHosts: reviewRemoteHostsSettings({
+				get: (key) => this.configurationService.getValue(key),
+				update: (key, value) => this.configurationService.updateValue(key, value, ConfigurationTarget.APPLICATION),
+				connection: this.desktopConnection,
+			}),
 			reloadWindow: async () => { await this.commandService.executeCommand("workbench.action.reloadWindow"); },
 			diffrConfig: {
 				saveSummarizer: (input) => this.desktopConnection.saveDiffrSummarizer(input),
@@ -883,6 +960,8 @@ export class ReviewCanvasEditorPane extends EditorPane {
 				},
 			},
 			manageExtensions: () => void this.commandService.executeCommand("review.manageExtensions"),
+			importVsCodeSettings: () => void this.commandService.executeCommand("review.importUserConfig"),
+			uninstallApp: () => void this.commandService.executeCommand("review.uninstallApp"),
 		};
 	}
 
@@ -919,6 +998,10 @@ export class ReviewCanvasEditorPane extends EditorPane {
 		return choice === "wide" || choice === "full" ? choice : "standard";
 	}
 
+	private currentCodeFontSize(): number {
+		return this.configurationService.getValue<number>(EDITOR_FONT_SIZE_SETTING);
+	}
+
 	private currentReadyNotification(): ReviewReadyNotificationChoice {
 		return this.configurationService.getValue<ReviewReadyNotificationChoice>(REVIEW_READY_NOTIFICATION_SETTING) ?? "off";
 	}
@@ -947,14 +1030,14 @@ export class ReviewCanvasEditorPane extends EditorPane {
 	 */
 	private resolveOnboarding(status: ReviewCliInstallStatus): ReviewCanvasOnboarding {
 		const checked = new Set(this.readTutorialProgress().checked);
-		const steps = REVIEW_TUTORIAL_STEP_IDS.filter((step) => step !== "openMap" || this.currentSoftwareMapEnabled());
 		return {
 			installed: !status.cli || status.shim.installed,
-			tutorialChecked: steps.filter((step) => checked.has(step)).length,
-			tutorialTotal: steps.length,
-			// Drafts are filtered out of this list and the tutorial never
-			// joins it, so this counts only a real published review.
-			published: this.apiCatalog.reviews.length > 0,
+			tutorialChecked: REVIEW_TUTORIAL_STEP_IDS.filter((step) => checked.has(step)).length,
+			tutorialTotal: REVIEW_TUTORIAL_STEP_IDS.length,
+			// Drafts are filtered out of this list, the tutorial never joins
+			// it and the scratchpad is set aside, so this counts only a real
+			// published review.
+			published: this.storageService.getBoolean(REVIEW_HAS_PUBLISHED_BOARD, StorageScope.APPLICATION, false) || homeSessions(this.apiCatalog.reviews).length > 0,
 		};
 	}
 
@@ -1086,9 +1169,11 @@ export class ReviewCanvasEditorPane extends EditorPane {
 			this.canvas.value.update(content);
 		} else {
 			this.canvas.value = assets.mountReviewCanvas(this.canvasMount, content, {
-				confirmDelete: title => {
+				setupTooltip: this.setupTooltip,
+				notify: (notification) => showReviewNotification(this.notificationService, notification),
+				confirmDelete: titles => {
 					const openedGeneration = this.loadGeneration;
-					return confirmReviewDeletion(this.dialogService, title,
+					return confirmReviewDeletion(this.dialogService, titles,
 						() => openedGeneration === this.loadGeneration && this.isVisible());
 				},
 				showMenu: request => {
@@ -1131,6 +1216,39 @@ export class ReviewCanvasEditorPane extends EditorPane {
 		return assets;
 	}
 
+	private readonly setupTooltip: NonNullable<ReviewCanvasBridge["setupTooltip"]> = (target, content, tooltip) => {
+		if (tooltip?.instant) return new ReviewTooltip(this.hoverService, target, { label: content, detail: tooltip.detail });
+		const store = new DisposableStore();
+		const hover = store.add(new MutableDisposable<IHoverWidget>());
+		const options: IHoverOptions = {
+			target,
+			content: tooltip?.detail ? `${content}\n${tooltip.detail}` : content,
+			position: { hoverPosition: HoverPosition.ABOVE },
+			appearance: { compact: true, showPointer: true },
+			persistence: { hideOnKeyDown: true },
+		};
+		const quick = store.add(new MutableDisposable());
+		store.add(addDisposableListener(target, "mouseenter", () => {
+			if (target.getAttribute("aria-expanded") === "true") return;
+			if (!tooltip?.quick) {
+				hover.value = this.hoverService.showDelayedHover(options, { groupId: "review-topbar", reducedDelay: true });
+				return;
+			}
+			const delay = this.configurationService.getValue<number>("workbench.hover.reducedDelay") / 2;
+			const timer = setTimeout(() => { hover.value = this.hoverService.showInstantHover(options); }, delay);
+			quick.value = toDisposable(() => clearTimeout(timer));
+		}));
+		store.add(addDisposableListener(target, "mouseleave", () => quick.clear()));
+		store.add(addDisposableListener(target, "focus", () => {
+			if (!target.matches(":focus-visible") || target.getAttribute("aria-expanded") === "true") return;
+			hover.value = this.hoverService.showInstantHover(options);
+		}));
+		for (const event of ["blur", "pointerdown", "click", "keydown"]) {
+			store.add(addDisposableListener(target, event, () => { quick.clear(); hover.clear(); }));
+		}
+		return store;
+	};
+
 	/** The bridge members every canvas shares; `onReady` runs once the mount reports ready. */
 	private sharedBridge(
 		generation: number,
@@ -1156,42 +1274,8 @@ export class ReviewCanvasEditorPane extends EditorPane {
 			currentDiffLayout: () => this.diffViews.diffLayout.get(),
 			setDiffLayout: (layout) => this.diffViews.diffLayout.set(layout),
 			onDidChangeDiffLayout: (listener) => this.diffViews.diffLayout.onDidChange(listener),
-			notify: ({ kind, text }) => {
-				if (kind === "error") this.notificationService.error(text);
-				else this.notificationService.info(text);
-			},
-			setupTooltip: (target, content, tooltip) => {
-				if (tooltip?.instant) return new ReviewTooltip(this.hoverService, target, { label: content, detail: tooltip.detail });
-				const store = new DisposableStore();
-				const hover = store.add(new MutableDisposable<IHoverWidget>());
-				const options: IHoverOptions = {
-					target,
-					content: tooltip?.detail ? `${content}\n${tooltip.detail}` : content,
-					position: { hoverPosition: HoverPosition.ABOVE },
-					appearance: { compact: true, showPointer: true },
-					persistence: { hideOnKeyDown: true },
-				};
-				const quick = store.add(new MutableDisposable());
-				store.add(addDisposableListener(target, "mouseenter", () => {
-					if (target.getAttribute("aria-expanded") === "true") return;
-					if (!tooltip?.quick) {
-						hover.value = this.hoverService.showDelayedHover(options, { groupId: "review-topbar", reducedDelay: true });
-						return;
-					}
-					const delay = this.configurationService.getValue<number>("workbench.hover.reducedDelay") / 2;
-					const timer = setTimeout(() => { hover.value = this.hoverService.showInstantHover(options); }, delay);
-					quick.value = toDisposable(() => clearTimeout(timer));
-				}));
-				store.add(addDisposableListener(target, "mouseleave", () => quick.clear()));
-				store.add(addDisposableListener(target, "focus", () => {
-					if (!target.matches(":focus-visible") || target.getAttribute("aria-expanded") === "true") return;
-					hover.value = this.hoverService.showInstantHover(options);
-				}));
-				for (const event of ["blur", "pointerdown", "click", "keydown"]) {
-					store.add(addDisposableListener(target, event, () => { quick.clear(); hover.clear(); }));
-				}
-				return store;
-			},
+			notify: (notification) => showReviewNotification(this.notificationService, notification),
+			setupTooltip: this.setupTooltip,
 			ready: () => {
 				if (generation !== this.loadGeneration || !this.targetDocument) return;
 				this.targetDocument.body.dataset["reviewCanvasReady"] = "true";

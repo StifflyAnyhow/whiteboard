@@ -1,0 +1,87 @@
+/*---------------------------------------------------------------------------------------------
+ * Copyright (c) dev.fast. All rights reserved.
+ * Licensed under the MIT License. See LICENSE in the repository root for license information.
+ *--------------------------------------------------------------------------------------------*/
+import { Emitter, type Event } from '../../base/common/event.js';
+import { Disposable } from '../../base/common/lifecycle.js';
+import type { ReviewDiffProgress, ReviewDiffProgressFile } from '../common/reviewProtocol.js';
+import { structuralViewedProgress, structuralViewedRanges, structuralViewedScopes } from '../common/reviewStructuralViewed.js';
+import type { ReviewFilesEditorEntry } from './reviewFilesDiffView.js';
+import type { StructuralDiffSession } from './reviewStructuralDiffSession.js';
+
+// Several peeks can mount on one comparison. Only its first coverage snapshot
+// restores viewed folds; mounting another peek must not close a reopened fold.
+const initializedScopes = new WeakMap<StructuralDiffSession, Set<string>>();
+
+/** Viewed marks persist as line coverage; opening a fold only changes session fold state. */
+export class StructuralViewedState extends Disposable {
+	private readonly changed = this._register(new Emitter<void>());
+	readonly onDidChange = this.changed.event;
+	private readonly scopes = new Map<string, ReturnType<typeof structuralViewedScopes>>();
+	private readonly states = new Map<string, string>();
+	private memo: { files: Map<string, ReviewDiffProgressFile>; values: Map<string, ReturnType<typeof structuralViewedProgress>> } | undefined;
+
+	constructor(
+		private readonly session: StructuralDiffSession,
+		private readonly entries: readonly ReviewFilesEditorEntry[],
+		private readonly progress: () => ReviewDiffProgress | undefined,
+		onProgress: Event<void>,
+	) {
+		super();
+		const reset = () => { this.memo = undefined; this.sync(); };
+		this._register(onProgress(reset));
+		this._register(session.onDidChange(reset));
+		this.sync();
+	}
+
+	private getScopes(path: string) {
+		let scopes = this.scopes.get(path);
+		const diff = this.session.getTextDiff(path);
+		if (!scopes && diff) {
+			scopes = structuralViewedScopes(diff, path, this.entries.find(e => e.file.path === path)?.file.previousPath);
+			this.scopes.set(path, scopes);
+		}
+		return scopes;
+	}
+
+	get(path: string, id: number) {
+		const { files, values } = this.current();
+		const key = `${path}:${id}`;
+		let value = values.get(key);
+		if (!value) values.set(key, value = structuralViewedProgress(this.getScopes(path)?.get(id) ?? [], files.get(path)));
+		return value;
+	}
+
+	getViewedRanges(path: string) {
+		return structuralViewedRanges(this.getScopes(path), this.current().files.get(path));
+	}
+
+	private current() {
+		return this.memo ??= { files: new Map(this.progress()?.files.map(file => [file.path, file])), values: new Map() };
+	}
+
+	private sync(): void {
+		const initialized = initializedScopes.get(this.session) ?? new Set<string>();
+		initializedScopes.set(this.session, initialized);
+		for (const entry of this.entries) {
+			const path = entry.file.path;
+			if (!this.current().files.has(path)) continue;
+			const scopes = this.getScopes(path);
+			const viewed = [...scopes ?? []].filter(([id]) => this.get(path, id).state === 'viewed');
+			for (const [id, ranges] of scopes ?? []) {
+				const state = this.get(path, id).state;
+				const key = `${path}:${id}`, previous = this.states.get(key);
+				this.states.set(key, state);
+				// Only transitions (and initial load) fold a viewed scope. Reopening
+				// it must survive unrelated progress updates and layout changes.
+				const enclosed = viewed.some(([other, outer]) => other !== id
+					&& ranges.every(r => outer.some(o => r.side === o.side && r.file === o.file && o.fromLine <= r.fromLine && o.toLine >= r.toLine))
+					&& !outer.every(o => ranges.some(r => r.side === o.side && r.file === o.file && r.fromLine <= o.fromLine && r.toLine >= o.toLine)));
+				if (state === 'viewed' && !initialized.has(key) && !enclosed) this.session.setRegionCollapsed(path, id, true);
+				else if (previous === 'viewed' && state !== 'viewed') this.session.setRegionCollapsed(path, id, false);
+				initialized.add(key);
+			}
+		}
+		this.changed.fire();
+	}
+}

@@ -3,9 +3,9 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { withFileLock } from "@dev.fast/trace-core";
-import { ensureJsonCutover } from "@review/review-import/json-cutover.js";
 
 import { openLocalReviewStore } from "./local-data.js";
+import { initializeReviewStoreSchema } from "./store-schema.js";
 
 const lockOptions = {
   retryMs: 50,
@@ -14,10 +14,9 @@ const lockOptions = {
   unownedGraceMs: 1_000,
 };
 
-/** Both hosts finish migration under the same startup lock before opening the live DB. */
 export async function openReviewProfile(
   home: string,
-  options: { manageWorkspaces: boolean; log?: (message: string) => void },
+  options: { manageWorkspaces: boolean },
 ) {
   await mkdir(home, { recursive: true, mode: 0o700 });
 
@@ -25,8 +24,6 @@ export async function openReviewProfile(
     path.join(home, ".review-profile-startup"),
     lockOptions,
     async () => {
-      await ensureJsonCutover(home, options.log ?? (() => {}));
-
       for (const source of [
         path.join(home, "review-server", "reviews.db"),
         path.join(home, "reviews.db"),
@@ -70,6 +67,8 @@ async function importHeadlessStore(home: string, source: string) {
         .get(source)
     )
       return;
+
+    initializeReviewStoreSchema(database);
 
     const outcome = await withFileLock(
       path.join(path.dirname(source), "server.lock"),
@@ -124,7 +123,6 @@ async function importHeadlessStore(home: string, source: string) {
               ELSE json_set(s.snapshot,'$.pins.repositoryId',r.new_id) END
             FROM headless.versions s JOIN repository_ids r ON json_extract(s.snapshot,'$.pins.repositoryId')=r.old_id;
           INSERT INTO review_attention SELECT * FROM headless.review_attention;
-          INSERT OR IGNORE INTO legacy_imports SELECT * FROM headless.legacy_imports;
         `);
 
           database

@@ -206,9 +206,11 @@ export function AskComposer({
   /** Longest first: the first that fits on one line shows. */
   placeholders: readonly string[];
   disabled: boolean;
-  /** Whether a question can go now: an agent is chosen and none is busy. */
+  /** Whether a question can go now: an agent is chosen and none is busy,
+   * or one is answering and takes a follow-up. */
   canAsk: boolean;
-  /** Stops the turn under way; a Stop button replaces Ask while set. */
+  /** Stops the turn under way; a Stop button replaces Ask while set, unless
+   * a follow-up is written that can go. */
   stop?: () => void;
   /** The agent is still starting: Stop shows it connecting, not a turn to
    * stop. */
@@ -572,10 +574,11 @@ export function AskComposer({
             onPaste={paste}
           />
           <span {...stylex.props(styles.actions)}>
-            {stop ? (
+            {stop && !(canAsk && draft.trim()) ? (
               <IconButton
                 ref={stopTooltip}
                 aria-label={connecting ? "Stop connecting" : "Stop"}
+                xstyle={styles.square}
                 onClick={stop}
               >
                 <span
@@ -817,8 +820,11 @@ const styles = stylex.create({
     alignItems: "center",
     gap: "8px",
   },
+  // The one action in the field, a step up from the chrome's controls;
+  // Stop takes its place at the same size, so sending never shifts it.
   square: {
-    width: tokens.chromeControlHeight,
+    width: "28px",
+    height: "28px",
     padding: 0,
   },
   usage: {
@@ -826,6 +832,8 @@ const styles = stylex.create({
     padding: "4px",
   },
   submitIcon: {
+    width: "14px",
+    height: "14px",
     strokeWidth: "1.4px",
   },
   // In Stop's place while the agent starts.

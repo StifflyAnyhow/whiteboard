@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import type {
+  JsonObject,
   ReviewCanvasBridge,
+  ReviewDiffFileWire,
+  ReviewDiffViewSpec,
   ReviewInlineEditorSpec,
   ReviewSurfaceEvent,
 } from "@dev.fast/review-protocol";
@@ -67,6 +70,27 @@ afterEach(async () => {
   sessionStorage.clear();
   vi.unstubAllGlobals();
   rmSync(directory, { recursive: true, force: true });
+});
+
+it("shows agent migration guidance when an old review cannot be loaded", async () => {
+  const app = new Hono().route("/reviews-api", createReviewApi(store));
+  const container = document.createElement("div");
+  document.body.append(container);
+  await act(async () => {
+    canvas = mount(container, {
+      kind: "api",
+      reviewId: "11111111-1111-4111-8111-111111111111",
+      bridge: testReviewBridge(
+        {},
+        { request: async (url, init) => app.request(url, init) },
+      ),
+    });
+  });
+  await vi.waitFor(() => {
+    expect(container.textContent).toContain(
+      "ask your agent to migrate your old Whiteboard reviews",
+    );
+  });
 });
 
 it("mounts the existing canvas and preserves a section's DOM and collapsed state through live edits", async () => {
@@ -355,7 +379,7 @@ it("keeps sequence step identities and supports explanation/code steps without i
   ]);
 });
 
-it("dismisses immediately through the API without changing the saved document", async () => {
+it("moves a board to Trash without changing the saved document", async () => {
   const { reviewId } = await command({
     type: "create",
     title: "Dismiss me",
@@ -383,12 +407,12 @@ it("dismisses immediately through the API without changing the saved document", 
 
   const dismiss = [
     ...container.querySelectorAll<HTMLButtonElement>("button"),
-  ].find((button) => button.textContent === "Dismiss")!;
+  ].find((button) => button.textContent === "Move to Trash")!;
 
   await act(async () => dismiss.click());
 
   await vi.waitFor(() =>
-    expect(store.list()[0]?.dismissedAt).toEqual(expect.any(String)),
+    expect(store.list()[0]?.trashedAt).toEqual(expect.any(String)),
   );
   expect(store.read(reviewId).version).toBe(0);
 });
@@ -706,7 +730,7 @@ it("copies prose and code from the displayed historical JSON review", async () =
 
     const range = document.createRange();
     range.selectNodeContents(prose);
-    range.getBoundingClientRect = () => new DOMRect(10, 50, 100, 20);
+    range.getClientRects = () => [new DOMRect(10, 50, 100, 20)] as never;
     document.getSelection()!.removeAllRanges();
     document.getSelection()!.addRange(range);
     await act(async () => document.dispatchEvent(new Event("selectionchange")));
@@ -872,7 +896,11 @@ it("reads a worktree review's range as its base against the working tree, and a 
       "Committed work",
     );
 
-    expect(range(committed)).toContain("head c14db218");
+    expect(range(committed)).toBeUndefined();
+    expect(
+      committed.querySelector('[data-side="head"]')?.textContent,
+    ).toContain("c14db218");
+    expect(committed.querySelector('[data-side="base"]')).toBeNull();
     expect(committed.textContent).not.toContain("Working tree");
   } finally {
     await store.close();
@@ -952,7 +980,7 @@ it("offers to dismiss a review whose worktree is gone, without reading its diff"
     });
     await act(async () =>
       vi.waitFor(() =>
-        expect(container.textContent).toContain("Diff selection unavailable"),
+        expect(container.textContent).toContain("Code unavailable"),
       ),
     );
     await act(async () =>
@@ -969,12 +997,12 @@ it("offers to dismiss a review whose worktree is gone, without reading its diff"
 
     const dismiss = () =>
       [...container.querySelectorAll<HTMLButtonElement>("button")].find(
-        (button) => button.textContent === "Dismiss review",
+        (button) => button.textContent === "Move to Trash",
       );
 
     await act(async () => dismiss()!.click());
     await vi.waitFor(() =>
-      expect(gone.list()[0]?.dismissedAt).toEqual(expect.any(String)),
+      expect(gone.list()[0]?.trashedAt).toEqual(expect.any(String)),
     );
     expect(dismiss()).toBeUndefined();
   } finally {
@@ -1007,7 +1035,10 @@ it("offers the Diff view for a live worktree review and refreshes it on each sav
       context.json({ files: [], resolvedSelections: {}, lenses: [] }),
     );
     let progressReads = 0;
-    const files = vi.fn<() => Promise<never[]>>(async () => []);
+
+    const files = vi.fn<() => Promise<ReviewDiffFileWire[]>>(async () => [
+      { path: "a.ts", status: "modified" as const, additions: 1, deletions: 0 },
+    ]);
 
     const bridge = testReviewBridge(
       {},
@@ -1176,3 +1207,251 @@ it("builds the full diff only once the Diff view is shown", async () => {
   );
   await act(async () => vi.waitFor(() => expect(create).toHaveBeenCalled()));
 });
+
+function rewrittenWatch(
+  app: Hono,
+  rewrite: (line: { kind: string; value?: JsonObject }) => void,
+  requests: string[],
+): ReviewCanvasBridge["request"] {
+  const encoder = new TextEncoder();
+
+  return async (url, init) => {
+    requests.push(new URL(String(url)).pathname);
+    const response = await app.request(url, init);
+
+    if (!new URL(String(url)).pathname.endsWith("/watch") || !response.body)
+      return response;
+    const decoder = new TextDecoder();
+    let pending = "";
+
+    return new Response(
+      response.body.pipeThrough(
+        new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            pending += decoder.decode(chunk, { stream: true });
+            const lines = pending.split("\n");
+            pending = lines.pop()!;
+
+            for (const text of lines) {
+              const line = text && JSON.parse(text);
+
+              if (line) rewrite(line);
+              controller.enqueue(encoder.encode(`${JSON.stringify(line)}\n`));
+            }
+          },
+        }),
+      ),
+      response,
+    );
+  };
+}
+
+it("gives a review on another machine no tutorial controls, even a tutorial review", async () => {
+  const review = await command({
+    type: "create",
+    title: "Remote",
+    target: { kind: "commits", ...pins },
+  });
+
+  const app = new Hono().route("/reviews-api", createReviewApi(store));
+  app.get("/reviews-api/:id/commits", (context) => context.json([]));
+  const tutorial = vi.fn<(enabled: boolean) => void>();
+
+  const bridge = testReviewBridge(
+    {},
+    {
+      request: rewrittenWatch(
+        app,
+        (line) => {
+          if (line.value) line.value.origin = { tutorial: true };
+        },
+        [],
+      ),
+    },
+  );
+
+  const container = document.createElement("div");
+  document.body.append(container);
+  await act(async () => {
+    canvas = mount(container, {
+      kind: "api",
+      reviewId: review.reviewId,
+      host: "wb-a",
+      bridge,
+      setSourceView: () => {},
+      setTutorial: tutorial,
+    });
+  });
+  await act(async () => {
+    await vi.waitFor(() =>
+      expect(container.querySelector("h1")?.textContent).toBe("Remote"),
+    );
+  });
+
+  expect(tutorial).toHaveBeenCalled();
+  expect(tutorial).not.toHaveBeenCalledWith(true);
+});
+
+async function mountPeekReview(content: {
+  host?: string;
+  available?: { sourceWindows: boolean; languageFeatures: boolean };
+}) {
+  const review = await command({
+    type: "create",
+    title: "Peek review",
+    target: { kind: "commits", ...pins },
+  });
+
+  await command({
+    type: "edit",
+    reviewId: review.reviewId,
+    edit: {
+      type: "insert",
+      content: {
+        type: "code_peek",
+        source: rangeAnchor({
+          side: "base",
+          file: "src/a.ts",
+          fromLine: 1,
+          toLine: 2,
+        }),
+      },
+    },
+  });
+
+  const app = new Hono();
+  app.get("/reviews-api/:id/progress", (c) =>
+    c.json({
+      files: [],
+      lenses: [],
+      resolvedSelections: {
+        [JSON.stringify(["src/a.ts", "base", 1, "base", 2])]: [
+          { file: "src/a.ts", side: "base", fromLine: 1, toLine: 2 },
+        ],
+      },
+    }),
+  );
+  app.route("/reviews-api", createReviewApi(store));
+  app.get("/reviews-api/:id/commits", (context) => context.json([]));
+  const requested: string[] = [];
+  const inline: ReviewInlineEditorSpec[] = [];
+  const diffs: ReviewDiffViewSpec[] = [];
+
+  const bridge = testReviewBridge(
+    {},
+    {
+      request: async (url, init) => {
+        requested.push(new URL(String(url)).pathname);
+
+        return app.request(url, init);
+      },
+      inlineEditors: {
+        async find() {
+          return { matchCount: 0 };
+        },
+        create: (spec) => {
+          inline.push(spec);
+
+          return {
+            height: 180,
+            setActive() {},
+            setCollapsed() {},
+            async setFindQuery() {
+              return { matchCount: 0 };
+            },
+            revealFindMatch() {},
+            clearActiveFindMatch() {},
+            clearFind() {},
+            onDidChangeHeight: () => ({ dispose() {} }),
+            onDidError: () => ({ dispose() {} }),
+            dispose() {},
+          };
+        },
+      },
+      diffView: {
+        files: async () => [
+          { path: "src/a.ts", status: "modified", additions: 1, deletions: 0 },
+        ],
+        create: (spec) => {
+          diffs.push(spec);
+
+          return {
+            focus() {},
+            onDidError: () => ({ dispose() {} }),
+            dispose() {},
+          };
+        },
+      },
+    },
+  );
+
+  const container = document.createElement("div");
+  document.body.append(container);
+  await act(async () => {
+    canvas = mount(container, {
+      kind: "api",
+      reviewId: review.reviewId,
+      bridge,
+      setSourceView: () => {},
+      ...content,
+    });
+  });
+  await act(async () => {
+    await vi.waitFor(() => expect(inline).toHaveLength(1));
+  });
+
+  const button = (label: string) =>
+    [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (candidate) =>
+        candidate.textContent === label ||
+        candidate.getAttribute("aria-label") === label,
+    );
+
+  return { container, inline, diffs, requested, button };
+}
+
+it.each([
+  { available: undefined, shown: true },
+  {
+    available: { sourceWindows: false, languageFeatures: false },
+    shown: false,
+  },
+])(
+  "shows Open file and the source tree only where source windows are available ($available)",
+  async ({ available, shown }) => {
+    const { inline, diffs, button } = await mountPeekReview({ available });
+
+    expect(Boolean(button("Source tree ↗"))).toBe(shown);
+    expect(inline[0]!.onDidOpen !== undefined).toBe(shown);
+    await act(async () => button("Diff")!.click());
+    await act(async () => {
+      await vi.waitFor(() => expect(diffs).toHaveLength(1));
+    });
+    expect(diffs[0]!.openFile).toBe(shown ? undefined : false);
+  },
+);
+
+it.each([
+  { host: undefined, shown: true },
+  { host: "devbox", shown: false },
+])(
+  "shows the share control and the trace tab only for a laptop review (host $host)",
+  async ({ host }) => {
+    const shown = host === undefined;
+
+    const { button, requested } = await mountPeekReview({
+      host,
+      ...(host && {
+        available: { sourceWindows: false, languageFeatures: false },
+      }),
+    });
+
+    await act(async () => {
+      await vi.waitFor(() => expect(Boolean(button("Trace"))).toBe(shown));
+    });
+    expect(Boolean(button("Share review"))).toBe(shown);
+    expect(requested.some((path) => path.endsWith("/agent-traces"))).toBe(
+      shown,
+    );
+  },
+);

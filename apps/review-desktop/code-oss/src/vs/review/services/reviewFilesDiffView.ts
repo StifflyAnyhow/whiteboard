@@ -1,4 +1,4 @@
-import type { ReviewDiffProgress, ReviewDiffLens, ReviewDiffViewSpec } from "../common/reviewProtocol.js";
+import type { ReviewDiffProgress, ReviewDiffProgressFile, ReviewDiffLens, ReviewDiffViewSpec } from "../common/reviewProtocol.js";
 import { Range } from "../../editor/common/core/range.js";
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) dev.fast. All rights reserved.
@@ -11,11 +11,12 @@ import { Orientation, SplitView } from "../../base/browser/ui/splitview/splitvie
 import { disposableTimeout } from "../../base/common/async.js";
 import { Emitter, Event } from "../../base/common/event.js";
 import { Disposable, DisposableStore, MutableDisposable, toDisposable } from "../../base/common/lifecycle.js";
-import { autorun } from "../../base/common/observable.js";
+import { autorun, observableFromEvent, observableValue } from "../../base/common/observable.js";
 import { isEqual } from "../../base/common/resources.js";
 import { URI } from "../../base/common/uri.js";
 import { ElementSizeObserver } from "../../editor/browser/config/elementSizeObserver.js";
 import { isDiffEditor, type IDiffEditor } from "../../editor/browser/editorBrowser.js";
+import { DiffEditorViewModel } from "../../editor/browser/widget/diffEditor/diffEditorViewModel.js";
 import { MultiDiffEditorViewModel } from "../../editor/browser/widget/multiDiffEditor/multiDiffEditorViewModel.js";
 import { MultiDiffEditorWidget, type RevealOptions } from "../../editor/browser/widget/multiDiffEditor/multiDiffEditorWidget.js";
 import type { IMultiDiffEditorViewState } from "../../editor/browser/widget/multiDiffEditor/multiDiffEditorWidgetImpl.js";
@@ -38,6 +39,7 @@ import { type ReviewDiffFileWire } from "../common/reviewProtocol.js";
 import { binarySizeLabel, isBinaryCounts, type ReviewFileCounts } from "../common/reviewStructuralDiff.js";
 import type { ReviewDiffLayoutSetting } from "./reviewDiffLayout.js";
 import { reviewMultiDiffLabelUris, ReviewMultiDiffUIElementFactory } from "./reviewMultiDiff.js";
+import type { StructuralDiffSession } from "./reviewStructuralDiffSession.js";
 
 const FILE_TREE_MINIMUM_WIDTH = 180;
 const DIFF_MINIMUM_WIDTH = 320;
@@ -75,7 +77,7 @@ export class ReviewFilesEditorInput extends MultiDiffEditorInput {
 	constructor(
 		source: URI,
 		readonly entries: readonly ReviewFilesEditorEntry[],
-		readonly structural: boolean = false,
+		structural: StructuralDiffSession | undefined,
 		lens: boolean = false,
 		@ITextModelService textModelService: ITextModelService,
 		@ITextResourceConfigurationService
@@ -85,17 +87,22 @@ export class ReviewFilesEditorInput extends MultiDiffEditorInput {
 		multiDiffSourceResolverService: IMultiDiffSourceResolverService,
 		@ITextFileService textFileService: ITextFileService,
 	) {
-		const items = entries.map(
-				(entry) =>
-					new MultiDiffEditorItem(
-						entry.original,
-						entry.modified,
-						entry.goToFileResource,
-						undefined,
-						undefined,
-						reviewMultiDiffLabelUris(entry.file),
-					// Every hidden line comes from the one fold model: diffr's regions, never the diff editor's own unchanged-region hiding.
-					// Every collapsed region diffr sends is a hidden-region band; the editor's own folding stays off.
+		const items = new Map<ReviewFilesEditorEntry, MultiDiffEditorItem>();
+		// Wait for streamed roots before binding their collapse state.
+		const itemFor = (entry: ReviewFilesEditorEntry) => {
+			let item = items.get(entry);
+			if (!item) {
+				item = new MultiDiffEditorItem(
+					entry.original,
+					entry.modified,
+					entry.goToFileResource,
+					structural && entry.file.status !== "unchanged" && structural.getFileResult(entry.file.path)?.diff?.type !== "binary"
+						? structural.fileCollapse(entry.file.path)
+						: observableValue("collapsed", false),
+					undefined,
+					undefined,
+					reviewMultiDiffLabelUris(entry.file),
+					// Use diffr's child folds; the file header controls the root.
 					(structural || lens)
 						? {
 							...REVIEW_FILES_DIFF_EDITOR_OPTIONS,
@@ -106,15 +113,24 @@ export class ReviewFilesEditorInput extends MultiDiffEditorInput {
 								contextLineCount: 0,
 							},
 							folding: false,
+							// Structural rails use one geometry through code, folds and deleted rows.
+							...(structural ? {
+								guides: { indentation: false, bracketPairs: false },
+								// Fold controls follow the line numbers, with breathing room before code.
+								lineDecorationsWidth: 24,
+							} : {}),
 							glyphMargin: true,
 							experimental: { useTrueInlineView: false },
 						}
 						: { ...REVIEW_FILES_DIFF_EDITOR_OPTIONS, hideOriginalLineNumbers: entry.file.status === "added" || entry.file.status === "unchanged" },
-					),
-		);
+				);
+				items.set(entry, item);
+			}
+			return item;
+		};
 		const changes = new Emitter<void>();
 		let current: readonly MultiDiffEditorItem[] = [];
-		let loading = items.length > 0;
+		let loading = entries.length > 0;
 		const streamSource = {
 			isLoading: { get value() { return loading; }, onDidChange: changes.event },
 			resources: {
@@ -127,7 +143,7 @@ export class ReviewFilesEditorInput extends MultiDiffEditorInput {
 		super(
 			source,
 			"Files",
-			structural ? undefined : items,
+			structural ? undefined : entries.map(itemFor),
 			true,
 			textModelService,
 			textResourceConfigurationService,
@@ -144,7 +160,7 @@ export class ReviewFilesEditorInput extends MultiDiffEditorInput {
 		);
 		this._register(changes);
 		this.updateResources = (paths, pending) => {
-			loading = pending; current = items.filter((_, index) => paths.has(entries[index].file.path));
+			loading = pending; current = entries.filter(entry => paths.has(entry.file.path)).map(itemFor);
 			changes.fire();
 		};
 	}
@@ -183,6 +199,7 @@ export class ReviewFilesDiffView extends Disposable {
 	private readonly readyFiles = new Set<string>();
 	private readonly fileStates = new Map<string, string>();
 	private readonly settleHold = this._register(new MutableDisposable<DisposableStore>());
+	private readonly documentLayout = this._register(new MutableDisposable());
 	/** Full structural counts for views without persisted coverage. */
 	private readonly streamStats = new Map<
 		string,
@@ -193,26 +210,28 @@ export class ReviewFilesDiffView extends Disposable {
 	private readonly summaryTooltip: ReviewTooltip;
 	/** Files the stream says start hidden, with the reason shown in their header. */
 	private readonly hiddenFiles = new Map<string, string>();
-	private readonly hiddenApplied = new Set<string>();
 	private pendingPath: string | undefined;
 	private pendingSectionId: string | undefined;
 	private pendingSource: ReviewDiffLens["ranges"][number] | undefined;
 	private progress: ReviewDiffProgress | undefined;
+	private progressFiles = new Map<string, ReviewDiffProgressFile>();
 	private documentCollapsed = false;
 	private readonly initializedDocumentItems = new WeakSet<object>();
 	private readonly viewedApplied = new Map<string, string>();
 	private readonly streamStatus: HTMLElement;
 	private offscreen = false;
 	private layoutDeferred = false;
+	viewedScope: 'lens' | undefined;
 
 	constructor(
 		private readonly container: HTMLElement,
 		overflowWidgetsDomNode: HTMLElement | undefined,
-		layout: ReviewDiffLayoutSetting,
+		private readonly diffLayout: ReviewDiffLayoutSetting,
 		private readonly fileTreeContainer: HTMLElement | undefined,
 		private readonly onToggleViewed: ((path: string, sectionId?: string) => void) | undefined,
 		private readonly onToggleSection: ((id: string) => void) | undefined,
 		private readonly document: ReviewDiffViewSpec["document"],
+		openFile: boolean,
 		@IInstantiationService
 		private readonly reviewInstantiationService: IInstantiationService,
 		@IEditorService private readonly editorService: IEditorService,
@@ -234,11 +253,12 @@ export class ReviewFilesDiffView extends Disposable {
 					? this.input.entries.map((entry) => ({
 							original: entry.original,
 							modified: entry.modified,
-							additions: entry.file.status === "unchanged" || entry.file.binary ? undefined : this.entryProgress(entry)?.remaining.additions ?? (this.fileTreeContainer || this.document ? undefined : this.lineCounts(entry.file.path)?.added),
-							deletions: entry.file.status === "unchanged" || entry.file.binary ? undefined : this.entryProgress(entry)?.remaining.deletions ?? (this.fileTreeContainer || this.document ? undefined : this.lineCounts(entry.file.path)?.removed),
-							collapseLocked: !!entry.file.binary,
+							additions: entry.file.status === "unchanged" || this.isBinary(entry) ? undefined : this.entryProgress(entry)?.remaining.additions ?? (this.fileTreeContainer || this.document ? undefined : this.lineCounts(entry.file.path)?.added),
+							deletions: entry.file.status === "unchanged" || this.isBinary(entry) ? undefined : this.entryProgress(entry)?.remaining.deletions ?? (this.fileTreeContainer || this.document ? undefined : this.lineCounts(entry.file.path)?.removed),
+							collapseLocked: this.isBinary(entry),
 						countsTooltip: this.progressTooltip(entry) ?? this.streamStats.get(entry.file.path)?.tooltip,
 						viewedState: this.entryProgress(entry)?.state,
+						viewedScope: this.viewedScope,
 						onToggleViewed: entry.file.status !== "unchanged" && this.onToggleViewed ? () => this.onToggleViewed!(entry.file.path, entry.sectionId) : undefined,
 						sectionId: entry.sectionId,
 						sectionCollapsed: !!entry.sectionId && this.collapsedSections.has(entry.sectionId),
@@ -246,10 +266,10 @@ export class ReviewFilesDiffView extends Disposable {
 						section: entry.sectionStart ? this.progress?.sections?.find(section => section.id === entry.sectionId) : undefined,
 						onToggleSection: () => entry.sectionId && this.onToggleSection?.(entry.sectionId),
 						// A binary is folded like a hidden file, with its size as the reason.
-						note: entry.file.status === "unchanged" ? "Unchanged" : entry.file.binary ? this.binaryNote(entry.file.path) : this.hiddenFiles.get(entry.file.path),
-						noteTooltip: entry.file.binary ? { label: "No text to show · binary files stay folded" } : undefined,
+						note: entry.file.status === "unchanged" ? (this.document ? undefined : "Unchanged") : this.isBinary(entry) ? this.binaryNote(entry.file.path) : this.hiddenFiles.get(entry.file.path),
+						noteTooltip: this.isBinary(entry) ? { label: "No text to show · binary files stay folded" } : undefined,
 							// A binary has no text to open.
-							onDidOpen: entry.file.binary ? undefined : () => {
+							onDidOpen: this.isBinary(entry) || !(document ? document.onDidOpen : openFile) ? undefined : () => {
 								if (document?.onDidOpen) { document.onDidOpen(); return; }
 								const target = this.widget.tryGetCodeEditor(entry.goToFileResource);
 								const change = isDiffEditor(target?.diffEditor) ? target.diffEditor.getDiffComputationResult()?.changes2[0] : undefined;
@@ -283,8 +303,8 @@ export class ReviewFilesDiffView extends Disposable {
 		);
 		// The widget's own switch, not the per-item option refresh: it pins the
 		// width heuristic off, so the chosen layout is what renders at any width.
-		const applyLayout = () => this.widget.setRenderSideBySide(!document && layout.get() === "split");
-		this._register(layout.onDidChange(applyLayout));
+		const applyLayout = () => this.widget.setRenderSideBySide(this.diffLayout.get() === "split");
+		if (!document) this._register(this.diffLayout.onDidChange(applyLayout));
 		applyLayout();
 		if (document) {
 			this._register(this.widget.onDidChangeContentHeight(() => {
@@ -368,12 +388,30 @@ export class ReviewFilesDiffView extends Disposable {
 
 	async setInput(input: ReviewFilesEditorInput, viewState: IMultiDiffEditorViewState | undefined): Promise<void> {
 		this.settleHold.clear();
+		this.documentLayout.clear();
 		this.pendingViewState = viewState;
 		this.input = input;
 		this.changedFilesTree?.setFiles(Array.from(new Map(input.entries.map(entry => [entry.file.path, entry.file])).values()));
 		const viewModel = await input.getViewModel();
 		if (this._store.isDisposed) return;
 		this.viewModel = viewModel;
+		if (this.document) {
+			const preference = observableFromEvent(this.diffLayout.onDidChange, () => this.diffLayout.get());
+			// Unchanged and one-sided files, and completed identical comparisons, override the user's layout.
+			this.documentLayout.value = autorun(reader => {
+				const items = viewModel.items.read(reader);
+				const onePane = items.length > 0 && items.every(item => {
+					const entry = input.entries.find(entry => sameResource(item.originalUri, entry.original) && sameResource(item.modifiedUri, entry.modified));
+					if (!entry || entry.file.binary) return false;
+					if (entry.file.status === "added" || entry.file.status === "deleted" || entry.file.status === "unchanged") return true;
+					const comparison = item.diffEditorViewModel;
+					if (!(comparison instanceof DiffEditorViewModel)) return false;
+					const diff = comparison.diff.read(reader);
+					return comparison.isDiffUpToDate.read(reader) && diff?.identical === true && !diff.quitEarly;
+				});
+				this.widget.setRenderSideBySide(preference.read(reader) === "split" && !onePane);
+			});
+		}
 		// The canvas mounts this view without a user gesture, so the widget's
 		// first-change navigation must never take keyboard focus.
 		this.widget.setViewModel(viewModel, { preserveFocus: true, viewState, initialScrollPosition: this.document ? "top" : "firstChange" });
@@ -396,7 +434,6 @@ export class ReviewFilesDiffView extends Disposable {
 					this.initializedDocumentItems.add(item);
 					item.collapsed.set(this.documentCollapsed, undefined);
 				}
-				this.applyHiddenFiles(items);
 				this.applyViewedFiles();
 				const entry = this.input?.entries.find(
 					(e) => e.file.path === this.pendingPath,
@@ -462,6 +499,10 @@ export class ReviewFilesDiffView extends Disposable {
 		return isBinaryCounts(counts) ? undefined : counts;
 	}
 
+	private isBinary(entry: ReviewFilesEditorEntry): boolean {
+		return !!entry.file.binary || isBinaryCounts(this.streamStats.get(entry.file.path)?.counts);
+	}
+
 	private binaryNote(path: string): string {
 		const counts = this.streamStats.get(path)?.counts;
 		const size = isBinaryCounts(counts) ? binarySizeLabel(counts) : undefined;
@@ -491,42 +532,16 @@ export class ReviewFilesDiffView extends Disposable {
 		if (wasHidden) this.layout();
 	}
 
-	/** A file the stream says starts collapsed, and why: its record's `visibility`. */
+	/** The root's default-collapse reason, displayed on its file header. */
 	hideFile(path: string, label: string): void {
 		this.hiddenFiles.set(path, label);
 		this.headerFactory.refreshHeaders();
-		if (this.viewModel) this.applyHiddenFiles(this.viewModel.items.get());
-	}
-
-	/** GitHub's shape for a hidden file: the header stays, the body waits for a click. */
-	private applyHiddenFiles(
-		items: readonly {
-			originalUri: URI | undefined;
-			modifiedUri: URI | undefined;
-			collapsed: { set(value: boolean, tx: undefined): void };
-		}[],
-	): void {
-		for (const entry of this.input?.entries ?? []) {
-			if (
-				!this.hiddenFiles.has(entry.file.path) ||
-				this.hiddenApplied.has(entry.file.path)
-			)
-				continue;
-			const item = items.find(
-				(item) =>
-					sameResource(item.originalUri, entry.original) &&
-					sameResource(item.modifiedUri, entry.modified),
-			);
-			if (!item) continue;
-			item.collapsed.set(true, undefined);
-			this.hiddenApplied.add(entry.file.path);
-		}
 	}
 
 	private readonly collapsedSections = new Set<string>();
 	private readonly sectionViewed = new Map<string, string>();
 	private entryProgress(entry: ReviewFilesEditorEntry) {
-		return (entry.sectionId ? this.progress?.sections?.find(section => section.id === entry.sectionId)?.files : this.progress?.files)?.find(file => file.path === entry.file.path);
+		return this.progressFiles.get(`${entry.sectionId ?? ''}:${entry.file.path}`);
 	}
 	private progressTooltip(entry: ReviewFilesEditorEntry): ReviewTooltipContent | undefined {
 		const file = this.entryProgress(entry);
@@ -534,6 +549,10 @@ export class ReviewFilesDiffView extends Disposable {
 	}
 	setProgress(progress: ReviewDiffProgress): void {
 		this.progress = progress;
+		this.progressFiles = new Map([
+			...progress.files.map(file => [`:${file.path}`, file] as const),
+			...(progress.sections ?? []).flatMap(section => (section.files ?? []).map(file => [`${section.id}:${file.path}`, file] as const)),
+		]);
 		for (const section of progress.sections ?? []) {
 			const previous = this.sectionViewed.get(section.id);
 			if (section.state === 'viewed' && previous !== 'viewed') this.collapsedSections.add(section.id);
@@ -554,7 +573,8 @@ export class ReviewFilesDiffView extends Disposable {
 			if (previous === file.state) continue;
 			const item = this.itemFor(entry);
 			if (!item) continue;
-			if (file.state === 'viewed') item.collapsed.set(true, undefined);
+			// Embedded code starts open, even when its first progress snapshot is viewed.
+			if (file.state === 'viewed' && (!this.document || previous !== undefined)) item.collapsed.set(true, undefined);
 			else if (previous === 'viewed' || this.progress?.changedPaths?.includes(file.path)) item.collapsed.set(false, undefined);
 			this.viewedApplied.set(key, file.state);
 		}
@@ -567,7 +587,7 @@ export class ReviewFilesDiffView extends Disposable {
 		this.pendingSource = source; this.pendingSectionId = sectionId;
 		if (this.fileStates.has(entry.file.path)) { this.pendingPath = entry.file.path; return; }
 		this.itemFor(entry)?.collapsed.set(false, undefined);
-		this.reveal(entry, { highlight: true, side: source.side === 'base' ? 'original' : 'modified', range: new Range(source.fromLine, 1, source.toLine, 1) });
+		this.reveal(entry, { highlight: true, side: source.side === 'base' && entry.file.status !== 'unchanged' ? 'original' : 'modified', range: new Range(source.fromLine, 1, source.toLine, 1) });
 		this.pendingSource = undefined;
 	}
 
@@ -579,32 +599,6 @@ export class ReviewFilesDiffView extends Disposable {
 		this.pendingPath = this.fileStates.has(path) ? path : undefined;
 		this.showStreamStatus();
 		if (!this.pendingPath) this.reveal(entry);
-	}
-
-	get viewportHeight(): number { return this.diffContainer.clientHeight; }
-
-	/**
-	 * Pixels from the reading line (the list's top edge) to the first line of
-	 * `source`, negative once scrolled past. Rendered files measure their
-	 * editor; the rest are placed by file order around the topmost file, a
-	 * million pixels per file, which keeps them sorted and on the right side.
-	 */
-	sourceOffset(source: ReviewDiffLens['ranges'][number]): number | undefined {
-		const entries = this.input?.entries ?? [];
-		const pathOf = (entry: (typeof entries)[number]) => source.side === 'base' ? entry.file.previousPath ?? entry.file.path : entry.file.path;
-		const index = entries.findIndex(entry => pathOf(entry) === source.file);
-		if (index < 0) return undefined;
-		const entry = entries[index]!;
-		const resource = source.side === 'base' ? entry.original : entry.modified;
-		const editor = resource && this.widget.tryGetCodeEditor(resource)?.editor;
-		const node = editor?.getDomNode();
-		if (editor && node) {
-			return node.getBoundingClientRect().top - this.diffContainer.getBoundingClientRect().top
-				+ editor.getTopForLineNumber(source.fromLine) - editor.getScrollTop();
-		}
-		const active = this.viewModel?.activeDiffItem.get();
-		const activeIndex = active ? entries.findIndex(e => sameResource(active.modifiedUri, e.modified) && sameResource(active.originalUri, e.original)) : 0;
-		return (index - Math.max(0, activeIndex)) * 1_000_000 + source.fromLine;
 	}
 
 	loadingFailed(message: string): void {

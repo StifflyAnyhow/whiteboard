@@ -1,7 +1,9 @@
 import { fontSize } from "@canvas/scale.stylex";
 import {
   type ReviewCanvasContent,
+  type ReviewDiffViewSpec,
   type ReviewDocumentWidthChoice,
+  type ReviewInlineEditorSpec,
   parseReviewStackResponse,
   resolveReviewSourceView,
 } from "@dev.fast/review-protocol";
@@ -29,6 +31,7 @@ import {
 import { retainedTrace } from "./api-trace";
 import { App } from "./App";
 import type { RenderedReviewDocument } from "./App";
+import { readOpenAsks } from "./ask-open-state";
 import { AuthoringActivityContext } from "./authoring-activity-context";
 import {
   type AuthoringCursor,
@@ -53,6 +56,7 @@ import { readReviewNavigationRestore } from "./review-view-state";
 import { SharingContext } from "./share-control";
 import { tokens } from "./tokens.stylex";
 import { TutorialProvider } from "./tutorial-context";
+import { Button } from "./ui/button";
 
 type ApiContent = Extract<ReviewCanvasContent, { kind: "api" }>;
 
@@ -102,6 +106,7 @@ export function ApiCanvas({
   const [lensCursor, setLensCursor] = useState<AuthoringCursor | null>(null);
   useEffect(() => setVersion(content.version), [content.version]);
   const [data, setData] = useState<ApiDocumentData>();
+  const [trashedAt, setTrashedAt] = useState<string | null>(null);
   const dataRef = useRef(data);
   dataRef.current = data;
   const sourceRef = useRef<{ key: string; version: number }>(undefined);
@@ -111,6 +116,7 @@ export function ApiCanvas({
     const abort = new AbortController();
     const loader = createDocumentLoader(client);
     setData(undefined);
+    setTrashedAt(null);
     setActivity(undefined);
     setCursor(null);
     setLensCursor(null);
@@ -119,6 +125,7 @@ export function ApiCanvas({
     const lensMemory: CursorMemory = {};
 
     const show = async (snapshot: Snapshot) => {
+      setTrashedAt(snapshot.trashedAt ?? null);
       const next = await loader.load(snapshot);
 
       if (abort.signal.aborted) return;
@@ -179,7 +186,7 @@ export function ApiCanvas({
 
           if (
             shownVersion ===
-            `${snapshot.version}:${snapshot.pins?.worktreeRevision ?? ""}:${snapshot.sourceUnavailable ?? false}`
+            `${snapshot.version}:${snapshot.pins?.worktreeRevision ?? ""}:${snapshot.sourceUnavailable ?? false}:${snapshot.trashedAt ?? ""}`
           ) {
             setError(undefined);
 
@@ -188,7 +195,7 @@ export function ApiCanvas({
 
           try {
             await show(snapshot);
-            shownVersion = `${snapshot.version}:${snapshot.pins?.worktreeRevision ?? ""}:${snapshot.sourceUnavailable ?? false}`;
+            shownVersion = `${snapshot.version}:${snapshot.pins?.worktreeRevision ?? ""}:${snapshot.sourceUnavailable ?? false}:${snapshot.trashedAt ?? ""}`;
           } catch (cause) {
             // A failed resource or source fetch is a document problem. The
             // stream and the activity signal are still healthy, so do not
@@ -243,13 +250,26 @@ export function ApiCanvas({
     };
   }, [client, content.reviewId, version]);
 
-  const nativeSources = useMemo(
-    () => ({
-      inlineEditors: { ...content.bridge.inlineEditors },
-      diffView: { ...content.bridge.diffView },
-    }),
-    [content.bridge, sourceVersion, content.structuralDiffEnabled],
-  );
+  const openFile = content.available?.sourceWindows !== false;
+
+  const nativeSources = useMemo(() => {
+    const { inlineEditors, diffView } = content.bridge;
+
+    return openFile
+      ? { inlineEditors: { ...inlineEditors }, diffView: { ...diffView } }
+      : {
+          inlineEditors: {
+            ...inlineEditors,
+            create: (spec: ReviewInlineEditorSpec) =>
+              inlineEditors.create({ ...spec, onDidOpen: undefined }),
+          },
+          diffView: {
+            ...diffView,
+            create: (spec: ReviewDiffViewSpec) =>
+              diffView.create({ ...spec, openFile: false }),
+          },
+        };
+  }, [content.bridge, sourceVersion, content.structuralDiffEnabled, openFile]);
 
   const baseSession = useMemo(() => {
     const bridge = {
@@ -292,6 +312,9 @@ export function ApiCanvas({
       ...baseSession,
       review: {
         kind: snapshot.kind,
+        trashedAt: snapshot.trashedAt,
+        host: content.host,
+        available: content.available,
         pins: snapshot.pins
           ? { base: snapshot.pins.base, head: snapshot.pins.head }
           : undefined,
@@ -311,22 +334,52 @@ export function ApiCanvas({
               signal,
             ),
           ).layers,
+        createBranchReview: async (
+          branch: string,
+          base: string,
+          title: string,
+        ) =>
+          (
+            await client.post<{ reviewId: string }>("/commands", {
+              operation: {
+                type: "create",
+                title,
+                target: {
+                  kind: "commits",
+                  repositoryId: snapshot.pins!.repositoryId,
+                  head: branch,
+                  base,
+                },
+              },
+            })
+          ).reviewId,
         dismiss: async () => {
           await client.post("/commands", {
             operation: {
-              type: "attention",
+              type: "lifecycle",
               reviewId: content.reviewId,
-              action: "dismiss",
+              state: "trash",
             },
           });
         },
       },
     };
-  }, [baseSession, client, content.reviewId, data, version]);
+  }, [
+    baseSession,
+    client,
+    content.reviewId,
+    content.host,
+    content.available,
+    data,
+    version,
+  ]);
 
   // Only the latest version of a review this machine owns takes edits.
   const editable =
-    version === undefined && data !== undefined && !data.snapshot.shared;
+    version === undefined &&
+    data !== undefined &&
+    !data.snapshot.shared &&
+    !data.snapshot.trashedAt;
 
   const saveMarkdown = useMemo(
     () =>
@@ -354,12 +407,15 @@ export function ApiCanvas({
   }, [Boolean(data), content.bridge]);
 
   useEffect(() => {
-    if (data) content.setTutorial?.(data.snapshot.origin?.tutorial === true);
-  }, [data?.snapshot.origin?.tutorial, content.setTutorial]);
+    if (data)
+      content.setTutorial?.(
+        !content.host && data.snapshot.origin?.tutorial === true,
+      );
+  }, [data?.snapshot.origin?.tutorial, content.host, content.setTutorial]);
 
   const sharing = useMemo(
     () =>
-      data
+      data && !content.host && !data.snapshot.trashedAt
         ? {
             client,
             reviewId: content.reviewId,
@@ -367,7 +423,43 @@ export function ApiCanvas({
             sender: data.snapshot.shared?.login,
           }
         : null,
-    [client, content.reviewId, data],
+    [client, content.reviewId, content.host, data],
+  );
+
+  const trashBanner = trashedAt && (
+    <div role="status" {...stylex.props(styles.trashBanner)}>
+      In Trash ·{" "}
+      {Math.min(
+        30,
+        Math.max(
+          0,
+          Math.ceil(
+            (Date.parse(trashedAt) + 30 * 86400000 - Date.now()) / 86400000,
+          ),
+        ),
+      )}{" "}
+      days left
+      <Button
+        onClick={() =>
+          void client
+            .post("/commands", {
+              operation: {
+                type: "lifecycle",
+                state: "active",
+                reviewId: content.reviewId,
+              },
+            })
+            .then(() => client.read<Snapshot>(`/${content.reviewId}?full=true`))
+            .then((snapshot) => {
+              setTrashedAt(snapshot.trashedAt ?? null);
+              setData((current) => current && { ...current, snapshot });
+            })
+            .catch((cause) => setError(message(cause)))
+        }
+      >
+        Restore
+      </Button>
+    </div>
   );
 
   // Loads are near-instant, so stay blank until there is data or an error.
@@ -375,6 +467,7 @@ export function ApiCanvas({
   if (!data)
     return (
       <CanvasQueryProvider client={client} reviewId={content.reviewId}>
+        {trashBanner}
         {error !== undefined && (
           <>
             <p {...stylex.props(styles.error)} role="status">
@@ -391,77 +484,85 @@ export function ApiCanvas({
     );
 
   return (
-    <CanvasQueryProvider client={client} reviewId={content.reviewId}>
-      <SharingContext.Provider value={sharing}>
-        <ReviewSessionProvider session={session}>
-          <ReviewPanelProvider
-            restore={() =>
-              readReviewNavigationRestore(session.config, {
-                softwareMapEnabled:
-                  content.softwareMapEnabled === true && data.maps.size > 0,
-                hasChangeRange:
-                  (data.snapshot.pins?.base ?? "") !==
-                  (data.snapshot.pins?.head ?? ""),
-                version: data.snapshot.version,
-                lensMode:
-                  content.structuralDiffEnabled === false
-                    ? "textual"
-                    : "structural",
-                commits: data.commits,
-              })
-            }
-          >
-            <DocumentData.Provider value={data}>
-              <ReviewLensesProvider
-                client={client}
-                snapshot={data.snapshot}
-                coverageRevision={coverageRevision}
-                structuralDiffEnabled={content.structuralDiffEnabled}
-              >
-                <TutorialProvider tutorial={content.tutorial}>
-                  {error && (
-                    <p {...stylex.props(styles.error)} role="status">
-                      {error}
-                    </p>
-                  )}
-                  <AuthoringActivityContext.Provider
-                    value={version === undefined ? activity : undefined}
-                  >
-                    <DrawQueueProvider
-                      cursor={version === undefined ? cursor : undefined}
+    <div {...stylex.props(styles.canvasSurface)}>
+      <CanvasQueryProvider client={client} reviewId={content.reviewId}>
+        <SharingContext.Provider value={sharing}>
+          <ReviewSessionProvider session={session}>
+            <ReviewPanelProvider
+              restore={() => ({
+                asks: readOpenAsks(session.config),
+                ...readReviewNavigationRestore(session.config, {
+                  softwareMapEnabled:
+                    content.softwareMapEnabled === true && data.maps.size > 0,
+                  hasChangeRange:
+                    (data.snapshot.pins?.base ?? "") !==
+                    (data.snapshot.pins?.head ?? ""),
+                  version: data.snapshot.version,
+                  lensMode:
+                    content.structuralDiffEnabled === false
+                      ? "textual"
+                      : "structural",
+                  commits: data.commits,
+                }),
+              })}
+            >
+              <DocumentData.Provider value={data}>
+                <ReviewLensesProvider
+                  client={client}
+                  snapshot={data.snapshot}
+                  coverageRevision={coverageRevision}
+                  structuralDiffEnabled={content.structuralDiffEnabled}
+                >
+                  <TutorialProvider tutorial={content.tutorial}>
+                    {error && (
+                      <p {...stylex.props(styles.error)} role="status">
+                        {error}
+                      </p>
+                    )}
+                    {trashBanner}
+                    <AuthoringActivityContext.Provider
+                      value={version === undefined ? activity : undefined}
                     >
                       <DrawQueueProvider
-                        scope="lenses"
-                        cursor={version === undefined ? lensCursor : undefined}
+                        cursor={version === undefined ? cursor : undefined}
                       >
-                        <DisplayedReviewVersionContext.Provider
-                          value={data.snapshot.version}
+                        <DrawQueueProvider
+                          scope="lenses"
+                          cursor={
+                            version === undefined ? lensCursor : undefined
+                          }
                         >
-                          <MapEnabled.Provider
-                            value={content.softwareMapEnabled === true}
+                          <DisplayedReviewVersionContext.Provider
+                            value={data.snapshot.version}
                           >
-                            <SaveMarkdown.Provider value={saveMarkdown}>
-                              <CanvasDocument
-                                data={data}
-                                findHost={findHost}
-                                softwareMapEnabled={
-                                  content.softwareMapEnabled === true
-                                }
-                                documentWidth={content.documentWidth}
-                              />
-                            </SaveMarkdown.Provider>
-                          </MapEnabled.Provider>
-                        </DisplayedReviewVersionContext.Provider>
+                            <MapEnabled.Provider
+                              value={content.softwareMapEnabled === true}
+                            >
+                              <SaveMarkdown.Provider value={saveMarkdown}>
+                                <div {...stylex.props(styles.canvasFrame)}>
+                                  <CanvasDocument
+                                    data={data}
+                                    findHost={findHost}
+                                    softwareMapEnabled={
+                                      content.softwareMapEnabled === true
+                                    }
+                                    documentWidth={content.documentWidth}
+                                  />
+                                </div>
+                              </SaveMarkdown.Provider>
+                            </MapEnabled.Provider>
+                          </DisplayedReviewVersionContext.Provider>
+                        </DrawQueueProvider>
                       </DrawQueueProvider>
-                    </DrawQueueProvider>
-                  </AuthoringActivityContext.Provider>
-                </TutorialProvider>
-              </ReviewLensesProvider>
-            </DocumentData.Provider>
-          </ReviewPanelProvider>
-        </ReviewSessionProvider>
-      </SharingContext.Provider>
-    </CanvasQueryProvider>
+                    </AuthoringActivityContext.Provider>
+                  </TutorialProvider>
+                </ReviewLensesProvider>
+              </DocumentData.Provider>
+            </ReviewPanelProvider>
+          </ReviewSessionProvider>
+        </SharingContext.Provider>
+      </CanvasQueryProvider>
+    </div>
   );
 }
 
@@ -529,6 +630,24 @@ const CanvasDocument = memo(function CanvasDocument({
 });
 
 const styles = stylex.create({
+  canvasSurface: {
+    height: "100%",
+    display: "flex",
+    flexDirection: "column",
+    minHeight: 0,
+  },
+  canvasFrame: { flex: "1 1 auto", minHeight: 0 },
+  trashBanner: {
+    display: "flex",
+    gap: "12px",
+    alignItems: "center",
+    padding: "10px 24px",
+    backgroundColor: tokens.tray,
+    color: tokens.inkMuted,
+    fontFamily: tokens.fontMono,
+    fontSize: fontSize.body,
+    flexShrink: 0,
+  },
   error: {
     maxWidth: "72ch",
     margin: "32px auto",

@@ -1,4 +1,6 @@
-import type { JsonValue } from "@dev.fast/json";
+import type { JsonObject } from "@dev.fast/json";
+
+import type { ReviewGatewayHostState } from "./contracts.js";
 
 /** List metadata for the authenticated local catalog; document contents stay in snapshots. */
 export interface ReviewApiSummary {
@@ -26,6 +28,7 @@ export interface ReviewApiSummary {
   origin?: {
     branch?: string;
     baseRef?: string;
+    baseBranch?: string;
     pullRequestNumber?: number;
     pullRequestUrl?: string;
     revision?: string;
@@ -42,10 +45,38 @@ export interface ReviewApiSummary {
     deletions: number;
   } | null;
   viewedAt: string | null;
-  dismissedAt: string | null;
+  trashedAt: string | null;
   /** An agent holds a live lease; absent on shared reviews. */
   working?: boolean;
+  host?: string;
+  hostState?: Exclude<ReviewGatewayHostState["state"], "duplicate">;
+  available?: { sourceWindows: boolean; languageFeatures: boolean };
 }
+
+/**
+ * The sessions Home lists, the scratchpad aside. With none, Home is the
+ * Welcome rail, so the host fetches install status exactly when this is empty.
+ */
+export function homeSessions(
+  reviews: readonly ReviewApiSummary[],
+): ReviewApiSummary[] {
+  return reviews.filter((review) => review.kind !== "scratchpad");
+}
+
+export type ReviewStreamSnapshot<Snapshot extends object = JsonObject> =
+  Snapshot & {
+    activity: { workingCount: number; expiresAt: number | null };
+    coverageRevision: number;
+  };
+
+export type ReviewStreamLine<Snapshot extends object = JsonObject> =
+  | {
+      kind: "list";
+      mode: "structural" | "textual";
+      reviews: ReviewApiSummary[];
+    }
+  | { kind: "review"; reviewId: string; value: ReviewStreamSnapshot<Snapshot> }
+  | { kind: "review"; reviewId: string; error: string };
 
 export interface ReviewSourceEntry {
   path: string;
@@ -119,16 +150,12 @@ export class ReviewApiClient {
       })
     ).json();
   }
-  async *watch<T = unknown>(
-    reviewId: string | null | Subscription[],
+  async *watch(
+    subscriptions: Subscription[],
     signal: AbortSignal,
-  ): AsyncGenerator<T> {
+  ): AsyncGenerator<ReviewStreamLine> {
     const response = await this.response(
-      Array.isArray(reviewId)
-        ? `/watch?subscriptions=${encodeURIComponent(JSON.stringify(reviewId))}`
-        : reviewId === null
-          ? "/watch"
-          : `/${encodeURIComponent(reviewId)}/watch`,
+      `/watch?subscriptions=${encodeURIComponent(JSON.stringify(subscriptions))}`,
       { signal },
     );
 
@@ -154,8 +181,8 @@ export class ReviewApiClient {
         let end: number;
 
         while ((end = pending.indexOf("\n")) !== -1) {
-          // SAFETY: the authenticated host serializes the snapshot type requested by this caller.
-          yield JSON.parse(pending.slice(0, end)) as T;
+          // SAFETY: the authenticated host writes ReviewStreamLine values.
+          yield JSON.parse(pending.slice(0, end)) as ReviewStreamLine;
           pending = pending.slice(end + 1);
         }
       }
@@ -204,15 +231,19 @@ export class ReviewApiClient {
   }
 }
 
-type Result = { value?: JsonValue; error?: string } | null;
+type Result =
+  | { value: ReviewStreamSnapshot | ReviewApiSummary[] }
+  | { error: string };
 
 type Listener = {
   subscription: Subscription;
   signal: AbortSignal;
-  accept(value: JsonValue | undefined): void | Promise<void>;
+  accept(
+    value: ReviewStreamSnapshot | ReviewApiSummary[],
+  ): void | Promise<void>;
   disconnected(cause: unknown): void;
   /** The newest undelivered result; replaced rather than queued while a render runs. */
-  queued?: Exclude<Result, null>;
+  queued?: Result;
   draining?: boolean;
 };
 
@@ -232,6 +263,13 @@ function sleep(ms: number, signal: AbortSignal) {
     const timer = setTimeout(done, ms);
     signal.addEventListener("abort", done, { once: true });
   });
+}
+
+function concerns(line: ReviewStreamLine, subscription: Subscription) {
+  return line.kind === "list"
+    ? subscription.reviewId === null &&
+        (subscription.mode ?? "structural") === line.mode
+    : subscription.reviewId === line.reviewId;
 }
 
 function report(listener: Listener, cause: unknown) {
@@ -320,19 +358,17 @@ class LiveConnection {
 
     while (!signal.aborted) {
       try {
-        for await (const results of this.client.watch<Result[]>(
+        for await (const line of this.client.watch(
           listeners.map((item) => item.subscription),
           signal,
         )) {
           if (signal.aborted) break;
           delay = 1000;
+          const result = line.kind === "list" ? { value: line.reviews } : line;
 
-          listeners.forEach((listener, index) => {
-            const result = results[index];
-
-            // null marks a subscription unchanged since the previous line.
-            if (result) this.deliver(listener, result);
-          });
+          for (const listener of listeners)
+            if (concerns(line, listener.subscription))
+              this.deliver(listener, result);
         }
 
         if (!signal.aborted) disconnected(new Error("Connection closed."));
@@ -352,7 +388,7 @@ class LiveConnection {
   }
 
   /** Renders never block the stream: a slow tab only delays its own newest state. */
-  private deliver(listener: Listener, result: Exclude<Result, null>) {
+  private deliver(listener: Listener, result: Result) {
     listener.queued = result;
 
     if (listener.draining) return;
@@ -363,7 +399,7 @@ class LiveConnection {
         const next = listener.queued;
         listener.queued = undefined;
 
-        if (next.error) {
+        if ("error" in next) {
           report(listener, new Error(next.error));
           continue;
         }

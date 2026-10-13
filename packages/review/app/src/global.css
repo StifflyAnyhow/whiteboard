@@ -25,6 +25,7 @@
   --agent-2-glow: rgba(43, 179, 173, 0.3);
   --board-grid: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><circle cx='1' cy='1' r='0.8' fill='%231A1F2A'/></svg>");
   --review-header-height: 35px;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
   --font-serif: "Newsreader", Georgia, serif;
   --font-mono: "Geist Mono", ui-monospace, monospace;
   --font-display: var(--font-mono);
@@ -257,13 +258,6 @@ button {
 /* KaTeX sets math at 1.21em; this matches its x-height to the prose. */
 .review-app .katex {
   font-size: 1.04em;
-}
-
-/* A pin row past a narrow document's edge moves inside it. StyleX has no
-   @position-try. */
-@position-try --ask-pin-inside {
-  right: 4px;
-  left: auto;
 }
 
 /* The software map's React Flow layers: edges under the cards, edge labels

@@ -1,8 +1,8 @@
 import { RunOnceScheduler } from "../../base/common/async.js";
-import { observableValue, transaction, type IObservable, type ISettableObservable } from "../../base/common/observable.js";
 import { Emitter } from "../../base/common/event.js";
 import { Disposable } from "../../base/common/lifecycle.js";
 import { CancellationError } from "../../base/common/errors.js";
+import { derivedWithSetter, observableValue, type ISettableObservable } from "../../base/common/observable.js";
 import { structuralFilePath, STRUCTURAL_WIRE_VERSION, type StructuralEvent, type StructuralRegion, type StructuralTextDiff } from "../common/reviewStructuralDiff.js";
 import type { StructuralDiff } from "../common/reviewProtocol.js";
 import type { StructuralDiffStream } from "./reviewStructuralDiffClient.js";
@@ -11,14 +11,11 @@ export interface StructuralFileResult {
 	diff?: StructuralDiff;
 	error?: string;
 	hidden?: string;
-	annotationError?: string;
 }
 
 export interface StructuralSessionChange {
 	/** Files whose diff or fold state changed. */
 	readonly files: ReadonlySet<string>;
-	/** Files with new summary labels or summary errors; their diff is unchanged. */
-	readonly labels: ReadonlySet<string>;
 	readonly status: boolean;
 }
 
@@ -27,15 +24,11 @@ export class StructuralDiffSession extends Disposable {
 	private readonly changed = this._register(new Emitter<StructuralSessionChange>());
 	readonly onDidChange = this.changed.event;
 	private readonly pendingFiles = new Set<string>();
-	private readonly pendingLabels = new Set<string>();
 	private pendingStatus = false;
-	private readonly regions = new Map<string, StructuralRegion>();
-	private readonly labels = new Map<string, ISettableObservable<string | undefined>>();
-	private readonly pendingLabelValues = new Map<string, string>();
 	private readonly notification = this._register(new RunOnceScheduler(() => this.flushChanges(), 16));
 	private readonly abort = new AbortController();
 	private readonly results = new Map<string, StructuralFileResult>();
-	private readonly folds = new Map<string, boolean>();
+	private readonly folds = new Map<string, boolean | ISettableObservable<boolean>>();
 	private manifest: Set<string> | undefined;
 	private task: Promise<void> | undefined;
 	private finished = false;
@@ -74,12 +67,33 @@ export class StructuralDiffSession extends Disposable {
 		const diff = this.results.get(path)?.diff;
 		return diff?.type === "text" ? diff : undefined;
 	}
-	isRegionCollapsed(path: string, id: number): boolean | undefined { return this.folds.get(`${path}:${id}`); }
+	isRegionCollapsed(path: string, id: number): boolean | undefined {
+		const state = this.folds.get(`${path}:${id}`);
+		return typeof state === "boolean" ? state : state?.get();
+	}
+	/** The file header owns the root fold. There is no separate file collapse state. */
+	fileCollapse(path: string): ISettableObservable<boolean> {
+		const diff = this.getTextDiff(path);
+		const root = (diff?.rhs ?? diff?.lhs)?.root;
+		const state = root ? this.folds.get(`${path}:${root.fold_state_id}`) : undefined;
+		if (!state || typeof state === "boolean") throw new Error(`Missing root collapse state for ${path}.`);
+		return state;
+	}
 	setRegionCollapsed(path: string, id: number, collapsed: boolean): void {
 		const key = `${path}:${id}`;
-		if (this.disposed || this.folds.get(key) === collapsed) return;
-		this.folds.set(key, collapsed);
-		this.notify(path);
+		if (this.disposed) return;
+		const state = this.folds.get(key);
+		if (typeof state === "object") state.set(collapsed, undefined);
+		else if (state !== collapsed) { this.folds.set(key, collapsed); this.notify(path); }
+	}
+
+	private createFold(path: string, initial: boolean): ISettableObservable<boolean> {
+		const state = observableValue(this, initial);
+		return derivedWithSetter(this, reader => state.read(reader), (collapsed, tx) => {
+			if (this.disposed || state.get() === collapsed) return;
+			state.set(collapsed, tx);
+			this.notify(path);
+		});
 	}
 
 	private async consume(): Promise<void> {
@@ -107,25 +121,10 @@ export class StructuralDiffSession extends Disposable {
 			if (event.type !== "start" || event.version !== STRUCTURAL_WIRE_VERSION) throw new Error("Unsupported diffr stream protocol.");
 			this.acceptManifest(event);
 		} else if (event.type === "file") this.storeFileResult(event);
-		else if (event.type === "annotations") this.applyAnnotations(event);
 		else if (event.type === "complete") this.finishLoading(event);
 		else throw new Error(`Unexpected diffr event: ${event.type}`);
 		if (event.type === "file") this.notify(structuralFilePath(event.file));
-		else if (event.type === "annotations") {
-			this.pendingLabels.add(structuralFilePath(event.file));
-			this.notify();
-		} else this.notify(undefined, true);
-	}
-
-	/** Stable presentation state, shared by all editors displaying this region. */
-	regionLabel(path: string, id: number): IObservable<string | undefined> {
-		const key = `${path}:${id}`;
-		let label = this.labels.get(key);
-		if (!label) {
-			label = observableValue<string | undefined>(this, this.regions.get(key)?.visibility?.label);
-			this.labels.set(key, label);
-		}
-		return label;
+		else this.notify(undefined, true);
 	}
 
 	private notify(path?: string, status = false): void {
@@ -135,15 +134,11 @@ export class StructuralDiffSession extends Disposable {
 	}
 
 	private flushChanges(): void {
-		if (!this.pendingFiles.size && !this.pendingLabels.size && !this.pendingStatus) return;
+		if (!this.pendingFiles.size && !this.pendingStatus) return;
 		const change: StructuralSessionChange = {
-			files: new Set(this.pendingFiles), labels: new Set(this.pendingLabels), status: this.pendingStatus,
+			files: new Set(this.pendingFiles), status: this.pendingStatus,
 		};
-		const labels = new Map(this.pendingLabelValues);
-		this.pendingFiles.clear(); this.pendingLabels.clear(); this.pendingLabelValues.clear(); this.pendingStatus = false;
-		transaction(tx => {
-			for (const [key, value] of labels) this.labels.get(key)?.set(value, tx);
-		});
+		this.pendingFiles.clear(); this.pendingStatus = false;
 		this.changed.fire(change);
 	}
 
@@ -159,34 +154,23 @@ export class StructuralDiffSession extends Disposable {
 		const diff = event.diff;
 		if (diff.type === "text") {
 			const seed = (region: StructuralRegion) => {
-				this.regions.set(`${path}:${region.id}`, region);
 				const key = `${path}:${region.fold_state_id}`;
 				if (!this.folds.has(key)) this.folds.set(key, region.visibility?.collapsed === true);
 				if (region.kind === "fold") region.children.forEach(seed);
 			};
-			for (const side of [diff.lhs, diff.rhs]) side?.regions?.forEach(seed);
+			for (const side of [diff.lhs, diff.rhs]) if (side) {
+				seed(side.root);
+				const key = `${path}:${side.root.fold_state_id}`;
+				const state = this.folds.get(key)!;
+				// Only roots need a synchronous observable for multi-diff headers;
+				// interior folds keep using the session's batched notifications.
+				if (typeof state === "boolean") this.folds.set(key, this.createFold(path, state));
+			}
 		}
-		this.results.set(path, {
-			diff,
-			hidden: event.visibility?.collapsed ? event.visibility.label || "Hidden by default" : undefined
-		});
-	}
-
-	private applyAnnotations(event: Extract<StructuralEvent, { type: "annotations" }>): void {
-		const path = structuralFilePath(event.file);
-		const result = this.results.get(path);
-		if (result?.diff?.type !== "text") throw new Error(`Annotations precede a text result: ${path}`);
-		// Validate the entire batch before applying it. Labels do not replace the
-		// source, correspondence, region identities, or the reader's fold choices.
-		for (const annotation of event.annotations) {
-			if (!this.regions.has(`${path}:${annotation.region_id}`)) throw new Error(`Unknown annotation region: ${annotation.region_id}`);
-		}
-		for (const annotation of event.annotations) {
-			const region = this.regions.get(`${path}:${annotation.region_id}`)!;
-			region.visibility = { ...region.visibility, label: annotation.label };
-			this.pendingLabelValues.set(`${path}:${region.id}`, annotation.label);
-		}
-		result.annotationError = event.error?.message;
+		const visibility = diff.type === "text"
+			? [diff.rhs, diff.lhs].find(side => side?.root.visibility?.collapsed)?.root.visibility
+			: undefined;
+		this.results.set(path, { diff, hidden: visibility ? visibility.label || "Hidden by default" : undefined });
 	}
 
 	private finishLoading(event: Extract<StructuralEvent, { type: "complete" }>): void {
@@ -200,11 +184,7 @@ export class StructuralDiffSession extends Disposable {
 		this.abort.abort();
 		this.results.clear();
 		this.folds.clear();
-		this.labels.clear();
-		this.regions.clear();
 		this.pendingFiles.clear();
-		this.pendingLabels.clear();
-		this.pendingLabelValues.clear();
 		super.dispose();
 	}
 }

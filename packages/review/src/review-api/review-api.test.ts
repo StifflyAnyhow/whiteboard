@@ -4,6 +4,10 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
+import {
+  STRUCTURAL_DIFF_WIRE_VERSION,
+  type StructuralSource,
+} from "@dev.fast/review-protocol";
 import { anchorSelection, rangeAnchor } from "@review/lens-selection.js";
 import { createGlobalReviewServer } from "@review/server/desktop-server.js";
 import { GlobalReviewDesktopVerbRelay } from "@review/server/global-verb-relay.js";
@@ -15,6 +19,7 @@ import { authoringTools } from "./authoring-tools.js";
 import { ReviewApiClient } from "./client.js";
 import { documentText } from "./document-text.js";
 import { ReviewInputError } from "./document.js";
+import { createReviewApi } from "./http.js";
 import { LocalReviewData } from "./local-data";
 import {
   type ReviewProviders,
@@ -83,6 +88,28 @@ afterEach(async () => {
   await store.close();
   vi.unstubAllEnvs();
   rmSync(directory, { recursive: true, force: true });
+});
+
+it("guides missing-review reads and opens to an agent while keeping missing versions distinct", async () => {
+  const api = createReviewApi(store);
+  const oldId = "11111111-1111-4111-8111-111111111111";
+
+  for (const [route, method] of [
+    [`/${oldId}`, "GET"],
+    [`/${oldId}/open`, "POST"],
+  ]) {
+    const response = await api.request(route!, { method });
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      error:
+        "Review not found. If this is an old Whiteboard review, ask your agent to migrate your old Whiteboard reviews.",
+    });
+  }
+
+  const { reviewId } = await create();
+  const response = await api.request(`/${reviewId}?version=999`);
+  expect(response.status).toBe(404);
+  expect(await response.json()).toEqual({ error: "Review version not found." });
 });
 
 describe("snapshot authoring", () => {
@@ -156,19 +183,22 @@ describe("snapshot authoring", () => {
   });
 
   it("preserves imported provenance when attaching a PR and supports explicit repin identity", async () => {
-    const { reviewId } = await create();
-    await store.importVersion({
-      reviewId,
-      title: "Imported",
-      pins,
-      document: [],
-      createdAt: new Date().toISOString(),
-      origin: {
-        branch: "feature",
-        baseRef: "main",
-        revision: "legacy-revision",
+    const { reviewId } = await store.execute(
+      request({
+        type: "create",
+        title: "Imported",
+        target: { kind: "commits", ...pins },
+      }),
+      {
+        document: [],
+        origin: {
+          branch: "feature",
+          baseRef: "main",
+          revision: "legacy-revision",
+        },
       },
-    });
+    );
+
     await store.execute(
       request({
         type: "set_target",
@@ -234,6 +264,16 @@ describe("snapshot authoring", () => {
       content: { type: "markdown", markdown: "Private review text" },
     });
     const deletion = request({ type: "delete", reviewId });
+    const saved = store.read(reviewId);
+    await expect(store.execute(deletion)).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(store.read(reviewId)).toEqual(saved);
+    expect(store.history(reviewId)).toHaveLength(2);
+
+    await store.execute(
+      request({ type: "lifecycle", state: "trash", reviewId }),
+    );
     const result = await store.execute(deletion);
     expect(result).toMatchObject({ reviewId, deleted: true });
     expect(() => store.read(reviewId)).toThrow(/not found/);
@@ -249,7 +289,7 @@ describe("snapshot authoring", () => {
     ]);
     await expect(store.execute(deletion)).rejects.toThrow(/not found/);
   });
-  it("persists attention without creating a document version or notifying its readers", async () => {
+  it("persists lifecycle changes without creating a version and notifies readers", async () => {
     const { reviewId } = await create();
     const other = await create();
     const document = store.read(reviewId);
@@ -259,15 +299,23 @@ describe("snapshot authoring", () => {
 
     store.subscribe(documents);
     store.subscribeCatalog(catalog);
-    const dismiss = request({ type: "attention", reviewId, action: "dismiss" });
-    const result = await store.execute(dismiss);
+    const dismiss = request({ type: "lifecycle", reviewId, state: "trash" });
     await store.execute(
       request({ type: "attention", reviewId, action: "view" }),
     );
+    const viewedAt = store.summary(reviewId)!.viewedAt;
+    const result = await store.execute(dismiss);
+    await expect(
+      store.execute(request({ type: "attention", reviewId, action: "view" })),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(store.summary(reviewId)!.viewedAt).toBe(viewedAt);
     expect(result).toMatchObject({ version: 0, attention: true });
-    expect(documents).not.toHaveBeenCalled();
+    expect(documents).toHaveBeenCalledOnce();
     expect(catalog).toHaveBeenCalledTimes(2);
-    expect(store.read(reviewId)).toEqual(document);
+    expect(store.read(reviewId)).toEqual({
+      ...document,
+      trashedAt: expect.any(String),
+    });
     expect(store.history(reviewId)).toHaveLength(1);
     await store.close();
     store = new ReviewStore(database, providers);
@@ -275,20 +323,120 @@ describe("snapshot authoring", () => {
       store.list().find((review) => review.reviewId === reviewId),
     ).toMatchObject({
       viewedAt: expect.any(String),
-      dismissedAt: expect.any(String),
+      trashedAt: expect.any(String),
     });
     expect(
       store.list().find((review) => review.reviewId === other.reviewId),
     ).toMatchObject({
       viewedAt: null,
-      dismissedAt: null,
+      trashedAt: null,
     });
     await store.execute(
-      request({ type: "attention", reviewId, action: "restore" }),
+      request({ type: "lifecycle", reviewId, state: "active" }),
     );
     expect(
-      store.list().find((review) => review.reviewId === reviewId)?.dismissedAt,
+      store.list().find((review) => review.reviewId === reviewId)?.trashedAt,
     ).toBeNull();
+    expect(store.summary(reviewId)!.viewedAt).toBe(viewedAt);
+  });
+
+  it("keeps deleted boards and history read-only until restored, across restart", async () => {
+    const { reviewId } = await create();
+    await edit(reviewId, {
+      type: "insert",
+      content: { type: "markdown", markdown: "Retained content" },
+    });
+    const version = store.read(reviewId).version;
+    await store.execute(
+      request({ type: "lifecycle", state: "trash", reviewId }),
+    );
+    const trashedAt = store.summary(reviewId)!.trashedAt;
+    expect(trashedAt).toBeTruthy();
+    expect(store.read(reviewId, 0).trashedAt).toBe(trashedAt);
+
+    for (const operation of [
+      { type: "rename", reviewId, title: "Overwritten" },
+      { type: "restore", reviewId, version: 0 },
+      {
+        type: "edit",
+        reviewId,
+        edit: {
+          type: "insert",
+          content: { type: "markdown", markdown: "Overwritten" },
+        },
+      },
+      { type: "set_target", reviewId, target: { kind: "commits", ...pins } },
+    ])
+      await expect(store.execute(request(operation))).rejects.toMatchObject({
+        status: 409,
+      });
+    expect(() => store.activity.update(reviewId, { action: "begin" })).toThrow(
+      ReviewInputError,
+    );
+    expect(store.read(reviewId).version).toBe(version);
+    expect(store.history(reviewId)).toHaveLength(2);
+    await store.close();
+    store = new ReviewStore(database, providers);
+    expect(store.summary(reviewId)!.trashedAt).toBe(trashedAt);
+    await store.execute(
+      request({ type: "lifecycle", reviewId, state: "active" }),
+    );
+    await store.execute(
+      request({ type: "rename", reviewId, title: "Restored and editable" }),
+    );
+    expect(store.read(reviewId).title).toBe("Restored and editable");
+    expect(store.read(reviewId).trashedAt).toBeNull();
+  });
+
+  it("purges after 30 days, including on restart, and preserves newer deleted boards", async () => {
+    vi.useFakeTimers({ now: new Date("2026-10-01T00:00:00Z") });
+    const old = await create();
+    await store.execute(
+      request({ type: "lifecycle", state: "trash", reviewId: old.reviewId }),
+    );
+    vi.setSystemTime(new Date("2026-10-02T00:00:00Z"));
+    const newer = await create();
+    await store.execute(
+      request({ type: "lifecycle", state: "trash", reviewId: newer.reviewId }),
+    );
+    const originalDeadline = store.read(old.reviewId).trashedAt;
+    await store.execute(
+      request({ type: "lifecycle", state: "trash", reviewId: old.reviewId }),
+    );
+    expect(store.read(old.reviewId).trashedAt).toBe(originalDeadline);
+    await store.close();
+    vi.setSystemTime(new Date("2026-10-30T23:59:59Z"));
+    store = new ReviewStore(database, providers);
+    expect(store.has(old.reviewId)).toBe(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(store.has(old.reviewId)).toBe(false);
+    expect(store.has(newer.reviewId)).toBe(true);
+    await store.close();
+    vi.setSystemTime(new Date("2026-11-02T00:00:00Z"));
+    store = new ReviewStore(database, providers);
+    expect(store.has(newer.reviewId)).toBe(false);
+  });
+
+  it("migrates Archive with a fresh recovery window instead of purging old archived boards", async () => {
+    const { reviewId } = await create();
+    await store.execute(
+      request({ type: "lifecycle", state: "trash", reviewId }),
+    );
+    await store.close();
+    const db = new DatabaseSync(database);
+    db.exec(
+      "ALTER TABLE review_attention RENAME COLUMN deleted_at TO dismissed_at",
+    );
+    db.prepare(
+      "UPDATE review_attention SET dismissed_at=? WHERE review_id=?",
+    ).run("2020-01-01T00:00:00Z", reviewId);
+    db.close();
+    const before = Date.now();
+    store = new ReviewStore(database, providers);
+    expect(
+      Date.parse(store.summary(reviewId)!.trashedAt!),
+    ).toBeGreaterThanOrEqual(before);
+    expect(store.history(reviewId)).toHaveLength(1);
   });
 
   it.each([
@@ -1325,7 +1473,7 @@ describe("snapshot authoring", () => {
     });
 
     const refused = [
-      { type: "delete", reviewId: SCRATCHPAD_ID },
+      { type: "lifecycle", state: "trash", reviewId: SCRATCHPAD_ID },
       { type: "attention", reviewId: SCRATCHPAD_ID, action: "view" },
       { type: "rename", reviewId: SCRATCHPAD_ID, title: "Notes" },
       {
@@ -1833,20 +1981,26 @@ it("serves the experiment through the real desktop HTTP server and existing auth
       }),
     ).rejects.toThrow(/lines count from 1/);
     const abort = new AbortController();
-    const catalog = client.watch(null, abort.signal);
-    expect(reviewsOnly((await catalog.next()).value)).toMatchObject([
-      { reviewId, dismissedAt: null },
-    ]);
-    await post({ type: "attention", reviewId, action: "dismiss" });
-    expect(reviewsOnly((await catalog.next()).value)).toMatchObject([
-      { reviewId, dismissedAt: expect.any(String) },
+    const catalog = client.watch([{ reviewId: null }], abort.signal);
+
+    const nextList = async () => {
+      const line = (await catalog.next()).value;
+
+      return reviewsOnly(line?.kind === "list" ? line.reviews : []);
+    };
+
+    expect(await nextList()).toMatchObject([{ reviewId, trashedAt: null }]);
+    await post({ type: "lifecycle", reviewId, state: "trash" });
+    expect(await nextList()).toMatchObject([
+      { reviewId, trashedAt: expect.any(String) },
     ]);
     await catalog.return(undefined);
-    const live = client.watch(reviewId, abort.signal);
+    await post({ type: "lifecycle", reviewId, state: "active" });
+    const live = client.watch([{ reviewId }], abort.signal);
     expect((await live.next()).value).toMatchObject({
+      kind: "review",
       reviewId,
-      version: 0,
-      document: [],
+      value: { reviewId, version: 0, document: [] },
     });
     expect(
       (
@@ -1859,13 +2013,19 @@ it("serves the experiment through the real desktop HTTP server and existing auth
     ).toBe(200);
     const read = await fetch(url + "/" + reviewId + "?full=true", { headers });
     expect((await live.next()).value).toMatchObject({
-      version: 1,
-      document: [{ type: "sequence" }],
+      value: { version: 1, document: [{ type: "sequence" }] },
     });
     await live.return(undefined);
     abort.abort();
-    const reconnect = client.watch(reviewId, new AbortController().signal);
-    expect((await reconnect.next()).value).toMatchObject({ version: 1 });
+
+    const reconnect = client.watch(
+      [{ reviewId }],
+      new AbortController().signal,
+    );
+
+    expect((await reconnect.next()).value).toMatchObject({
+      value: { version: 1 },
+    });
     await reconnect.return(undefined);
     expect(await read.json()).toMatchObject({
       title: "HTTP review",
@@ -1892,15 +2052,19 @@ it("serves the experiment through the real desktop HTTP server and existing auth
         })
       ).status,
     ).toBe(413);
-    const watching = client.watch(reviewId, new AbortController().signal);
+    const watching = client.watch([{ reviewId }], new AbortController().signal);
     await watching.next();
-
-    await Promise.all([
-      expect(watching.next()).rejects.toThrow(Error),
-      post({ type: "delete", reviewId }).then((response) => {
-        expect(response.status).toBe(200);
-      }),
-    ]);
+    await post({ type: "lifecycle", state: "trash", reviewId });
+    expect((await watching.next()).value).toMatchObject({
+      value: { trashedAt: expect.any(String) },
+    });
+    expect((await post({ type: "delete", reviewId })).status).toBe(200);
+    expect((await watching.next()).value).toEqual({
+      kind: "review",
+      reviewId,
+      error: expect.stringMatching(/not found/i),
+    });
+    await watching.return(undefined);
     expect(
       (await fetch(`${url}/${reviewId}?full=true`, { headers })).status,
     ).toBe(404);
@@ -2037,6 +2201,17 @@ it("keeps reference coverage apart by pins: one path, changed under one comparis
   const { reviewProgress } = await import("./review-progress.js");
   const { reviewId } = await create();
   const data = new LocalReviewData(store);
+  vi.spyOn(data, "changes").mockImplementation((async (
+    at: typeof pins,
+    file?: string,
+  ) =>
+    file
+      ? "@@ -0,0 +1,3 @@\n+first\n+second\n+third\n"
+      : at.base === at.head
+        ? []
+        : [
+            { path: "a.ts", status: "modified", additions: 3, deletions: 0 },
+          ]) as typeof data.changes);
   const text = "first\nsecond\nthird";
   const changed = { ...pins, base: "other-base", head: "other-head" };
   const same = { repositoryId: pins.repositoryId, head: "other-head" };
@@ -2062,7 +2237,7 @@ it("keeps reference coverage apart by pins: one path, changed under one comparis
 
     yield {
       type: "start",
-      version: 4,
+      version: STRUCTURAL_DIFF_WIRE_VERSION,
       lhs: { type: "revision", rev: at.base },
       rhs: { type: "revision", rev: at.head },
       files,
@@ -2074,8 +2249,8 @@ it("keeps reference coverage apart by pins: one path, changed under one comparis
         file: file.file,
         diff: {
           type: "text",
-          lhs: { text: text },
-          rhs: { text: text },
+          lhs: structuralSource(text),
+          rhs: structuralSource(text),
           structural_changes: { base: [], head: [[0, 3]] },
           stats: {
             textual: { added: 3, removed: 0 },
@@ -2141,6 +2316,15 @@ it("preserves unchanged partial file coverage across pins and rejects stale writ
   const { reviewProgress } = await import("./review-progress.js");
   const { reviewId } = await create();
   const data = new LocalReviewData(store);
+  vi.spyOn(data, "changes").mockImplementation((async (
+    _pins: typeof pins,
+    file?: string,
+  ) =>
+    file
+      ? "@@ -2 +2 @@\n-old\n+second\n"
+      : [
+          { path: "a.ts", status: "modified", additions: 1, deletions: 1 },
+        ]) as typeof data.changes);
   let head = "first\nsecond\ncontext";
   let base = "first\nold\ncontext";
   vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
@@ -2150,7 +2334,7 @@ it("preserves unchanged partial file coverage across pins and rejects stale writ
   vi.spyOn(data, "structuralChanges").mockImplementation(async function* () {
     yield {
       type: "start",
-      version: 4,
+      version: STRUCTURAL_DIFF_WIRE_VERSION,
       lhs: { type: "revision", rev: "base" },
       rhs: { type: "revision", rev: "head" },
       files: [
@@ -2171,8 +2355,8 @@ it("preserves unchanged partial file coverage across pins and rejects stale writ
       },
       diff: {
         type: "text",
-        lhs: { text: base },
-        rhs: { text: head },
+        lhs: structuralSource(base),
+        rhs: structuralSource(head),
         structural_changes: { base: [[1, 2]], head: [[1, 2]] },
         stats: {
           textual: { added: 99, removed: 99 },
@@ -2268,10 +2452,77 @@ it("preserves unchanged partial file coverage across pins and rejects stale writ
   ).toEqual([]);
 });
 
+it("counts readable files when the comparison includes a non-UTF-8 fixture", async () => {
+  const { reviewProgress } = await import("./review-progress.js");
+  const { reviewId } = await create();
+  const data = new LocalReviewData(store);
+  vi.spyOn(data, "changes").mockImplementation((async (
+    _pins: typeof pins,
+    file?: string,
+  ) =>
+    file
+      ? "@@ -0,0 +1 @@\n+source\n"
+      : [
+          { path: "a.ts", status: "added", additions: 1, deletions: 0 },
+        ]) as typeof data.changes);
+  vi.spyOn(data, "file").mockImplementation(async (at, side, file) => ({
+    file,
+    side,
+    commit: at[side],
+    text: "source",
+  }));
+  vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
+    snapshot,
+    pins: snapshot.pins!,
+  }));
+  vi.spyOn(data, "structuralChanges").mockImplementation(async function* () {
+    const fixture = {
+      rhs: { path: "fixture.bin", oid: "fixture", mode: "100644" },
+    };
+
+    const readable = { rhs: { path: "a.ts", oid: "source", mode: "100644" } };
+
+    yield {
+      type: "start",
+      version: STRUCTURAL_DIFF_WIRE_VERSION,
+      lhs: { type: "revision", rev: pins.base },
+      rhs: { type: "revision", rev: pins.head },
+      files: [
+        { file: fixture, status: "added" },
+        { file: readable, status: "added" },
+      ],
+    };
+    yield {
+      type: "file",
+      file: fixture,
+      error: { code: "not_utf8", message: "fixture.bin is not valid UTF-8" },
+    };
+    yield {
+      type: "file",
+      file: readable,
+      diff: {
+        type: "text",
+        rhs: structuralSource("source"),
+        structural_changes: { base: [], head: [[0, 1]] },
+        stats: {
+          textual: { added: 1, removed: 0 },
+          visible: { added: 1, removed: 0 },
+        },
+      },
+    };
+    yield { type: "complete", succeeded: 1, failed: 1 };
+  });
+
+  const progress = await reviewProgress(store, data, store.read(reviewId));
+  expect(progress.files.map((file) => file.path)).toEqual(["a.ts"]);
+  expect(progress.files[0].changed.head).toEqual([[0, 1]]);
+});
+
 it("still reports structural read failures", async () => {
   const { reviewProgress } = await import("./review-progress.js");
   const { reviewId } = await create();
   const data = new LocalReviewData(store);
+  vi.spyOn(data, "changes").mockResolvedValue([]);
   vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
     snapshot,
     pins: snapshot.pins!,
@@ -2281,7 +2532,7 @@ it("still reports structural read failures", async () => {
 
     yield {
       type: "start",
-      version: 4,
+      version: STRUCTURAL_DIFF_WIRE_VERSION,
       lhs: { type: "revision", rev: pins.base },
       rhs: { type: "revision", rev: pins.head },
       files: [{ file, status: "added" }],
@@ -2351,7 +2602,7 @@ it("textual coverage uses Git ranges without launching diffr", async () => {
 
     yield {
       type: "start",
-      version: 4,
+      version: STRUCTURAL_DIFF_WIRE_VERSION,
       lhs: { type: "revision", rev: "base" },
       rhs: { type: "revision", rev: "head" },
       files: [{ file, status: "modified" }],
@@ -2361,8 +2612,8 @@ it("textual coverage uses Git ranges without launching diffr", async () => {
       file,
       diff: {
         type: "text",
-        lhs: { text: "const x=1;" },
-        rhs: { text: "const x = 1;" },
+        lhs: structuralSource("const x=1;"),
+        rhs: structuralSource("const x = 1;"),
         structural_changes: { base: [], head: [] },
         stats: {
           textual: { added: 1, removed: 1 },
@@ -2380,8 +2631,8 @@ it("textual coverage uses Git ranges without launching diffr", async () => {
 
   expect(structuralCatalog[0].diffStats).toEqual({
     fileCount: 1,
-    additions: 0,
-    deletions: 0,
+    additions: 1,
+    deletions: 1,
   });
 
   const structuralProgress = await (
@@ -2389,6 +2640,10 @@ it("textual coverage uses Git ranges without launching diffr", async () => {
   ).json();
 
   expect(coverageProgress(structuralProgress.files).total).toEqual({
+    additions: 1,
+    deletions: 1,
+  });
+  expect(coverageProgress(structuralProgress.files).remaining).toEqual({
     additions: 0,
     deletions: 0,
   });
@@ -2414,6 +2669,21 @@ it("resolves file lenses to whole changed files, preserves empty groups, and sha
       targets: [{ kind: "files", patterns }],
     });
   const data = new LocalReviewData(store);
+  vi.spyOn(data, "changes").mockImplementation((async (
+    _pins: typeof pins,
+    file?: string,
+  ) =>
+    file
+      ? "@@ -1 +1 @@\n-base\n+head\n"
+      : [
+          {
+            path: "guide/intro.md",
+            previousPath: "docs/old.md",
+            status: "renamed",
+            additions: 1,
+            deletions: 1,
+          },
+        ]) as typeof data.changes);
   vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
     snapshot,
     pins: snapshot.pins!,
@@ -2421,7 +2691,7 @@ it("resolves file lenses to whole changed files, preserves empty groups, and sha
   vi.spyOn(data, "structuralChanges").mockImplementation(async function* () {
     yield {
       type: "start",
-      version: 4,
+      version: STRUCTURAL_DIFF_WIRE_VERSION,
       lhs: { type: "revision", rev: "base" },
       rhs: { type: "revision", rev: "head" },
       files: [
@@ -2442,8 +2712,8 @@ it("resolves file lenses to whole changed files, preserves empty groups, and sha
       },
       diff: {
         type: "text",
-        lhs: { text: "base\ncontext\nmore context" },
-        rhs: { text: "head\ncontext\nmore context" },
+        lhs: structuralSource("base\ncontext\nmore context"),
+        rhs: structuralSource("head\ncontext\nmore context"),
         structural_changes: { base: [[0, 1]], head: [[0, 1]] },
         stats: {
           textual: { added: 99, removed: 99 },
@@ -2534,6 +2804,15 @@ it("validates range lens evidence and scopes progress and Uncategorized to disti
     },
   });
   const data = new LocalReviewData(store);
+  vi.spyOn(data, "changes").mockImplementation((async (
+    _pins: typeof pins,
+    file?: string,
+  ) =>
+    file
+      ? "@@ -1,3 +1,3 @@\n-base1\n-base2\n-base3\n+head1\n+head2\n+head3\n"
+      : [
+          { path: "src/a.ts", status: "modified", additions: 3, deletions: 3 },
+        ]) as typeof data.changes);
   vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
     snapshot,
     pins: snapshot.pins!,
@@ -2541,7 +2820,7 @@ it("validates range lens evidence and scopes progress and Uncategorized to disti
   vi.spyOn(data, "structuralChanges").mockImplementation(async function* () {
     yield {
       type: "start",
-      version: 4,
+      version: STRUCTURAL_DIFF_WIRE_VERSION,
       lhs: { type: "revision", rev: "base" },
       rhs: { type: "revision", rev: "head" },
       files: [
@@ -2562,8 +2841,8 @@ it("validates range lens evidence and scopes progress and Uncategorized to disti
       },
       diff: {
         type: "text",
-        lhs: { text: "base1\nbase2\nbase3" },
-        rhs: { text: "head1\nhead2\nhead3" },
+        lhs: structuralSource("base1\nbase2\nbase3"),
+        rhs: structuralSource("head1\nhead2\nhead3"),
         structural_changes: { base: [[0, 3]], head: [[0, 3]] },
         stats: {
           textual: { added: 99, removed: 99 },
@@ -2659,6 +2938,21 @@ it("returns coverage and lenses after initial files without requesting summary e
   const { reviewProgress } = await import("./review-progress.js");
   const { reviewId } = await create();
   const data = new LocalReviewData(store);
+  vi.spyOn(data, "changes").mockImplementation((async (
+    _pins: typeof pins,
+    file?: string,
+  ) =>
+    file
+      ? "@@ -0,0 +1 @@\n+added\n"
+      : [
+          { path: "a.ts", status: "added", additions: 1, deletions: 0 },
+        ]) as typeof data.changes);
+  vi.spyOn(data, "file").mockImplementation(async (at, side, file) => ({
+    file,
+    side,
+    commit: at[side],
+    text: "added",
+  }));
   vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
     snapshot,
     pins: snapshot.pins!,
@@ -2667,7 +2961,7 @@ it("returns coverage and lenses after initial files without requesting summary e
   vi.spyOn(data, "structuralChanges").mockImplementation(async function* () {
     yield {
       type: "start",
-      version: 4,
+      version: STRUCTURAL_DIFF_WIRE_VERSION,
       lhs: { type: "empty_tree" },
       rhs: { type: "revision", rev: "head" },
       files: [{ file, status: "added" }],
@@ -2677,7 +2971,7 @@ it("returns coverage and lenses after initial files without requesting summary e
       file,
       diff: {
         type: "text",
-        rhs: { text: "added" },
+        rhs: structuralSource("added"),
         structural_changes: { base: [], head: [[0, 1]] },
         stats: {
           textual: { added: 1, removed: 0 },
@@ -2740,7 +3034,7 @@ it("returns pending progress without waiting for coverage and signals completion
       new TextDecoder().decode((await reader.read()).value),
     );
 
-    expect(initial[0].value.coverageRevision).toBeGreaterThan(0);
+    expect(initial.value.coverageRevision).toBeGreaterThan(0);
     await reader.cancel();
     const ready = await api.request(route);
     expect(ready.status).toBe(200);
@@ -2790,7 +3084,7 @@ it("logs a provider failure and names its kind without returning its local detai
   }
 });
 
-it("makes a diagram step's selection usable before an unrelated file finishes counting", async () => {
+it("makes a streamed file selectable and markable before an unrelated file finishes counting", async () => {
   const { createReviewApi } = await import("./http.js");
   const { selectionKey } = await import("@review/lens-selection.js");
   const { reviewId } = await create();
@@ -2870,10 +3164,41 @@ it("makes a diagram step's selection usable before an unrelated file finishes co
       pending: true,
       sources: [],
     });
+    let marked: Response | undefined;
+
+    const marking = Promise.resolve(
+      api.request(`/${reviewId}/progress`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: store.read(reviewId).version,
+          mode: "textual",
+          files: [
+            {
+              path: "a.ts",
+              fingerprint: partial.files[0].fingerprint,
+              sources: [{ side: "head", file: "a.ts", fromLine: 1, toLine: 1 }],
+            },
+          ],
+          viewed: true,
+        }),
+      }),
+    ).then((response) => {
+      marked = response;
+
+      return response;
+    });
+
+    await vi.waitFor(() => expect(marked).toBeDefined());
+    expect(marked!.status).toBe(200);
+    const markedProgress = await (await marking).json();
+    expect(markedProgress.complete).toBe(false);
+    expect(markedProgress.files[0].viewed.head).toEqual([[0, 1]]);
     release();
     await data.coverage(reviewId, pins, "textual");
     const complete = await (await api.request(route)).json();
     expect(complete.complete).toBe(true);
+    expect(complete.files[0].viewed.head).toEqual([[0, 1]]);
     expect(complete.lenses[0].pending).toBe(false);
     expect(
       complete.resolvedSelections[selectionKey(anchorSelection(refs[1]!))],
@@ -2919,6 +3244,7 @@ it("Home reads persisted counts without scheduling comparisons, and changed pins
 it("shares pending comparison work even when more than 32 reviews are opened", async () => {
   const { reviewId } = await create();
   const data = new LocalReviewData(store);
+  vi.spyOn(data, "changes").mockResolvedValue([]);
   let release!: () => void;
 
   const gate = new Promise<void>((resolve) => {
@@ -2929,7 +3255,7 @@ it("shares pending comparison work even when more than 32 reviews are opened", a
     await gate;
     yield {
       type: "start",
-      version: 4,
+      version: STRUCTURAL_DIFF_WIRE_VERSION,
       lhs: { type: "revision", rev: "base" },
       rhs: { type: "revision", rev: "head" },
       files: [],
@@ -3003,3 +3329,19 @@ it("reports a created review with the origin its headers claim", async () => {
     { reviewId: expect.any(String), kind: "review", blocks: 0, via: "other" },
   ]);
 });
+
+function structuralSource(text: string): StructuralSource {
+  const lines = text.split("\n");
+
+  return {
+    text,
+    root: {
+      kind: "leaf",
+      id: 1,
+      fold_state_id: 1,
+      alignment_id: 1,
+      start: { line: 0, column: 0 },
+      end: { line: lines.length - 1, column: lines.at(-1)!.length },
+    },
+  };
+}

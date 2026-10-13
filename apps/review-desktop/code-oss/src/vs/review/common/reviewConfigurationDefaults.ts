@@ -26,6 +26,8 @@ export const REVIEW_KEYMAP_SETTING = 'review.keymap';
 export const REVIEW_TELEMETRY_SETTING = 'review.telemetry.enabled';
 export const REVIEW_STRUCTURAL_DIFF_SETTING = 'review.experimental.structuralDiff.enabled';
 export const REVIEW_SOFTWARE_MAP_SETTING = 'review.experimental.softwareMap.enabled';
+export const REVIEW_REMOTE_HOSTS_SETTING = 'review.remote.hosts';
+export const REVIEW_REMOTE_HOSTS_ENABLED_SETTING = 'review.experimental.remoteHosts.enabled';
 export const REVIEW_KEYMAPS = ['none', 'vim', 'emacs', 'sublime'] as const;
 export type ReviewKeymap = typeof REVIEW_KEYMAPS[number];
 export const REVIEW_CTRL_TAB_SETTING = 'review.tabs.ctrlTab';
@@ -37,9 +39,12 @@ export const REVIEW_READY_NOTIFICATION_SETTING = 'review.notifications.reviewRea
 export const REVIEW_READY_NOTIFICATION_CHOICES = ['notificationAndBadge', 'notification', 'off'] as const;
 export const REVIEW_DOCUMENT_WIDTH_SETTING = 'review.documentWidth';
 export const REVIEW_DOCUMENT_WIDTH_CHOICES = ['standard', 'wide', 'full'] as const;
+export const EDITOR_FONT_SIZE_SETTING = 'editor.fontSize';
 
 export const reviewConfigurationDefaults = {
 	[REVIEW_SOFTWARE_MAP_SETTING]: false,
+	[REVIEW_REMOTE_HOSTS_SETTING]: [],
+	[REVIEW_REMOTE_HOSTS_ENABLED_SETTING]: false,
 	[REVIEW_STRUCTURAL_DIFF_SETTING]: true,
 	[REVIEW_TELEMETRY_SETTING]: true,
 	'telemetry.telemetryLevel': 'off',
@@ -83,6 +88,9 @@ export const reviewConfigurationDefaults = {
 	// the editors share the chrome and code face of the whiteboard design. The
 	// tail is Monaco's own macOS default stack.
 	'editor.fontFamily': '"Geist Mono", Menlo, Monaco, "Courier New", monospace',
+	// Matches the chrome. Listing it here also keeps the first-run import from
+	// carrying over a VS Code size; Settings exposes it instead.
+	[EDITOR_FONT_SIZE_SETTING]: 12,
 	'editor.minimap.enabled': false,
 	// A 10px lane on both axes, as in the canvas; review.css insets the slider
 	// to the same 6px pill.

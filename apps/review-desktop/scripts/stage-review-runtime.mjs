@@ -2,9 +2,7 @@ import { execFile } from "node:child_process";
 import {
   access,
   chmod,
-  copyFile,
   cp,
-  mkdir,
   open,
   readFile,
   readdir,
@@ -12,7 +10,6 @@ import {
   rm,
   stat,
 } from "node:fs/promises";
-import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -21,7 +18,7 @@ import { pruneReviewRuntime } from "./prune-review-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 
-const diffrName = process.platform === "win32" ? "diffr.exe" : "diffr";
+export const RUNTIME_DIFFR_ENTRY = `node_modules/@dev.fast/diffr-${process.platform}-${process.arch}/${process.platform === "win32" ? "diffr.exe" : "diffr"}`;
 
 const appDirectory = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -48,10 +45,7 @@ export const REQUIRED_RUNTIME_ENTRIES = [
   "THIRD_PARTY_NOTICES.md",
   RUNTIME_SERVER_ENTRY,
   RUNTIME_CLI_ENTRY,
-  `bin/${diffrName}`,
-  "bin/diffr-package/bin/fetch.mjs",
-  "bin/diffr-package/package.json",
-  "bin/diffr-package/pins.json",
+  RUNTIME_DIFFR_ENTRY,
   "dist/cli.js",
   // The build's commit; without it the server reports `commit: null`.
   "dist/build-info.json",
@@ -82,6 +76,7 @@ export function requiredPackagedArtifacts(packagedRoot) {
     "out/vs/review/review.desktop.main.js",
     "out/vs/review/review.desktop.main.css",
     "out/vs/review/electron-utility/reviewDesktopHostMain.js",
+    "out/vs/review/node/reviewSshAskpassMain.js",
     "out/vs/review/canvas/canvas-loader.js",
     ...REQUIRED_RUNTIME_ENTRIES.map((entry) =>
       path.join(RUNTIME_DIRECTORY_NAME, entry),
@@ -135,7 +130,7 @@ export async function stageReviewRuntime(packagedRoot) {
       // their own dependency graphs. Injecting copies them in with their deps.
       "--config.inject-workspace-packages=true",
       "--filter",
-      "@dev.fast/review",
+      "@dev.fast/whiteboard",
       "--prod",
       "deploy",
       "--legacy",
@@ -147,7 +142,6 @@ export async function stageReviewRuntime(packagedRoot) {
   );
 
   await stageReviewDocs(runtimeRoot);
-  await stageDiffrBinary(runtimeRoot);
   await makeTreeOwnerWritable(path.join(runtimeRoot, "tutorial", "git-stub"));
   console.log("[runtime pruning]", await pruneReviewRuntime(runtimeRoot));
   await assertRuntimeClosure(runtimeRoot);
@@ -171,47 +165,6 @@ export async function stageReviewDocs(
   await assertMatchingFileTrees(sourceDocsRoot, destination);
 
   return destination;
-}
-
-export async function stageDiffrBinary(
-  runtimeRoot,
-  source = path.join(monorepoRoot, "packages", "review", "bin", diffrName),
-) {
-  if (!(await stat(source).catch(() => null))?.isFile()) {
-    throw new Error(
-      `Missing ${source}. Run pnpm --filter @dev.fast/review ensure:diffr before packaging.`,
-    );
-  }
-
-  const require = createRequire(
-    path.join(monorepoRoot, "packages/review/package.json"),
-  );
-
-  const packageRoot = path.dirname(
-    require.resolve("@dev.fast/diffr/package.json"),
-  );
-
-  await execFileAsync(process.execPath, [
-    path.join(packageRoot, "bin/fetch.mjs"),
-    "--check",
-    "--into",
-    path.dirname(source),
-  ]);
-
-  const destination = path.join(runtimeRoot, "bin", diffrName);
-  await mkdir(path.dirname(destination), { recursive: true });
-  await copyFile(source, destination);
-  const installerRoot = path.join(runtimeRoot, "bin/diffr-package");
-  await mkdir(path.join(installerRoot, "bin"), { recursive: true });
-
-  for (const file of ["package.json", "pins.json", "bin/fetch.mjs"]) {
-    await copyFile(
-      path.join(packageRoot, file),
-      path.join(installerRoot, file),
-    );
-  }
-
-  await chmod(destination, 0o755);
 }
 
 async function assertMatchingFileTrees(sourceRoot, destinationRoot) {

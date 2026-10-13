@@ -301,6 +301,9 @@ keys stay version-free for that reason, so the version rides on each object's
 `df-whiteboard-preview-<preview-version>.dmg`. curl only honours that with `-J`; a
 browser download always does.
 
+Homebrew casks (`devdotfast/tap/whiteboard`, `whiteboard@preview`) install the
+same versioned zips. The tap's hourly workflow bumps them from the update feed.
+
 ```
 update/stable/<target>/latest.json        current-release manifest
 update/preview/<target>/latest.json       current-preview manifest
@@ -385,13 +388,13 @@ Review updates installed optional groups to the catalog pins in the background.
 The update does not reload the window. A new pin takes effect on the next reload.
 
 Install, enable, or disable them with **Manage Extensions...** from the command palette,
-or from **Preferences ▸ Settings...** (⌘,). The choice persists per profile and
+or from **Settings...** (⌘,). The choice persists per profile and
 reloads the window, since extension enablement only applies when the extension
 host restarts.
 
 ## Settings
 
-**Preferences ▸ Settings...** (⌘,) opens the Settings tab. It is a canvas tab
+**Settings...** (⌘,) opens the Settings tab. It is a canvas tab
 like Home and Agent Setup, not the stock VS Code settings editor. It holds:
 
 | Section               | Setting                                                                       |
@@ -464,10 +467,11 @@ confirmations and simple prompts, `IQuickInputService` for searchable choices,
 Use the host's settings subscriptions for settings state.
 
 Expose the capability through a small typed canvas adapter; keep Code OSS
-imports out of the React canvas package. Canvas menus use the optional UI
-capability passed to `mountReviewCanvas`, including on Home and onboarding.
-Reuse the existing `setupTooltip` and `notify` bridges. Workbench services pick
-the appropriate platform implementation; they do not always use OS-native UI.
+imports out of the React canvas package. Home and onboarding have no review
+session, so they get host UI from the optional UI capability passed to
+`mountReviewCanvas`. Reuse the existing `setupTooltip` and `notify` bridges.
+Workbench services pick the appropriate platform implementation; they do not
+always use OS-native UI.
 
 Keep rich document content, forms, and inline feedback in React. Add another UI
 library only for a concrete behavior the existing host or browser primitives
@@ -477,28 +481,8 @@ Check keyboard navigation, cancellation, focus restoration, disposal, themes,
 zoom, and narrow layouts in the actual Desktop app when changing a host control;
 browser tests alone do not validate the workbench integration.
 
-## Canvas data
-
-The canvas uses TanStack Query (`canvas-query.tsx`) for local API and bridge
-requests. Use `useQuery` or `useMutation` for new requests instead of
-hand-written fetch effects; keep local UI state out of it.
-
-## Canvas CSS
-
-Canvas styles are StyleX, written with `stylex.create` next to the component
-that renders the element (`packages/review/app/src`). Shared pieces:
-`tokens.stylex.ts` (typed references to the theme's custom properties),
-`theme-styles.ts`, `controls-styles.ts` and `markers.stylex.ts`.
-
-- Use `tokens.*`, not raw colors.
-- For a different look inside another component, pass a variant or use
-  `stylex.when.ancestor` with a marker, not a descendant selector.
-- `global.css` holds only what StyleX cannot reach: the scope root, element
-  resets, and DOM the canvas does not render (workbench-mounted views, React
-  Flow internals, `::highlight()`). Don't add component styles there.
-- StyleX rules outrank the workbench's own CSS, which the browser tests don't
-  load, so check changes in the built canvas in Desktop (light, dark, narrow,
-  hover/focus, reduced motion). Do not add tests that assert CSS text.
+Canvas data and CSS conventions are in
+[`packages/review/app/README.md`](../../packages/review/app/README.md).
 
 ## Development and validation
 

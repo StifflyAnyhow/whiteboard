@@ -138,6 +138,7 @@ export interface ReviewSourcePins {
 
 export interface ReviewInlineEditorSpec {
   progress?: ReviewDiffProgress;
+  onSetViewed?: ReviewDiffViewSpec["onSetViewed"];
   container: HTMLElement;
   path: string;
   title: string;
@@ -152,7 +153,6 @@ export interface ReviewInlineEditorSpec {
   active: boolean;
   onDidFocus?: () => void;
   onDidOpen?: () => void;
-  onDidNavigate?: () => void;
   onDidShowHover?: () => void;
 }
 
@@ -253,14 +253,21 @@ export interface ReviewDiffViewSpec {
     onDidChangeHeight(height: number): void;
     onDidFocus?: () => void;
     onDidOpen?: () => void;
+    onDidShowHover?: () => void;
   };
   container: HTMLElement;
   fileTreeContainer?: HTMLElement;
   progress?: ReviewDiffProgress;
   onToggleViewed?: (path: string, sectionId?: string) => void;
+  /** Mark a structural scope using the same persisted line coverage as file marks. */
+  onSetViewed?: (
+    ranges: ReviewDiffLens["ranges"],
+    viewed: boolean,
+  ) => void | Promise<void>;
   onToggleSection?: (id: string) => void;
   lens?: ReviewDiffLens;
   scope?: ReviewCommitScope;
+  openFile?: boolean;
 }
 
 export interface ReviewDiffViewHandle extends ReviewDisposable {
@@ -273,21 +280,6 @@ export interface ReviewDiffViewHandle extends ReviewDisposable {
   /** Scroll to a changed file once loaded. Restore requests defer to saved editor position. */
   revealFile?(path: string, options?: { restore?: boolean }): void;
   onDidError(listener: (message: string) => void): ReviewDisposable;
-  /** Fires when the diff scrolls or its topmost file changes. */
-  onDidScroll?(
-    listener: (viewport: ReviewDiffViewport) => void,
-  ): ReviewDisposable;
-  /**
-   * Where `source` sits relative to the diff's reading line (its top edge),
-   * in pixels; negative once it has scrolled past. Exact for files that are
-   * rendered, ordered by file for the rest. Undefined when the file is not in
-   * this diff.
-   */
-  sourceOffset?(source: ReviewDiffLens["ranges"][number]): number | undefined;
-}
-
-export interface ReviewDiffViewport {
-  height: number;
 }
 
 /**
@@ -324,6 +316,14 @@ export interface ReviewTooltipOptions {
   detail?: string;
 }
 
+/** A host notification; running an action closes it, and onClose fires however it closes. */
+export interface ReviewNotification {
+  kind: "success" | "error";
+  text: string;
+  actions?: readonly { label: string; run(): void }[];
+  onClose?(): void;
+}
+
 export interface ReviewCanvasBridge {
   readonly appSessionId?: string;
   readonly config: ReviewRuntimeConfig;
@@ -341,7 +341,7 @@ export interface ReviewCanvasBridge {
   onDidChangeDiffLayout(
     listener: (layout: ReviewDiffLayout) => void,
   ): ReviewDisposable;
-  notify?(message: { kind: "success" | "error"; text: string }): void;
+  notify?(notification: ReviewNotification): ReviewDisposable;
   setupTooltip?(
     target: HTMLElement,
     text: string,
@@ -443,17 +443,16 @@ export type ReviewReadyNotificationChoice =
   | "off";
 
 export const REVIEW_TUTORIAL_STEP_IDS = [
-  "openPeek",
-  "gotoDefinition",
+  "chooseKeymap",
   "showHover",
-  "openCommits",
   "openDiff",
+  "selectLens",
+  "expandFold",
+  "backToWhiteboard",
   "openSequence",
-  "openMap",
+  "closeSequence",
   "openDatabase",
   "getHelp",
-  "chooseKeymap",
-  "openTraceQuote",
 ] as const;
 
 export type TutorialStepId = (typeof REVIEW_TUTORIAL_STEP_IDS)[number];
@@ -503,6 +502,7 @@ export interface ReviewDiffrConfig {
   credentialSource: "config" | "environment" | "missing";
   providers?: ReviewDiffrProvider[];
   defaultPrompt?: string;
+  defaultHiddenTags?: string[];
   changed?: boolean;
   error?: string;
 }
@@ -538,6 +538,7 @@ const reviewDiffrConfigSchema = z.object({
     )
     .optional(),
   defaultPrompt: z.string().optional(),
+  defaultHiddenTags: z.array(z.string()).optional(),
   changed: z.boolean().optional(),
   error: z.string().optional(),
 });
@@ -579,6 +580,9 @@ export interface ReviewCanvasSettingsContent {
   setDocumentWidth(
     choice: ReviewDocumentWidthChoice,
   ): Promise<ReviewDocumentWidthChoice>;
+  // `editor.fontSize`, which every diff, peek and source editor reads.
+  codeFontSize: number;
+  setCodeFontSize(size: number): Promise<number>;
   readyNotification: ReviewReadyNotificationChoice;
   setReadyNotification(
     choice: ReviewReadyNotificationChoice,
@@ -597,11 +601,27 @@ export interface ReviewCanvasSettingsContent {
   diffrConfig: ReviewDiffrConfigActions;
   reloadWindow(): Promise<void>;
   manageExtensions(): void;
+  importVsCodeSettings(): void;
+  uninstallApp(): void;
   // Agent installs are managed here too, so they stay reachable once Home
   // has reviews and no longer shows the Welcome rail. Absent when the
   // install status endpoint is unavailable.
   install?: ReviewCanvasInstallContent;
+  remoteHosts: ReviewRemoteHostsSettings;
 }
+
+export interface ReviewRemoteHostsSettings {
+  enabled: boolean;
+  configured: string[];
+  suggestions(): Promise<string[]>;
+  states(): Promise<ReviewGatewayHostState[]>;
+  set(aliases: string[]): Promise<string[]>;
+  retry(alias: string): Promise<void>;
+}
+
+export const REVIEW_REMOTE_ATTACH_BEGIN = "WHITEBOARD-REMOTE-BEGIN";
+
+export const REVIEW_REMOTE_ATTACH_END = "WHITEBOARD-REMOTE-END";
 
 /** Workspace attachment identity is independent of the displayed source generation. */
 export interface ReviewLanguageEnvironment {
@@ -710,6 +730,8 @@ export type ReviewCanvasContent =
       documentWidth?: ReviewDocumentWidthChoice;
       reviewId: string;
       version?: number;
+      host?: string;
+      available?: ReviewApiSummary["available"];
       bridge: ReviewCanvasBridge;
       setTitle?(title: string): void;
       setSourceView?(
@@ -732,22 +754,24 @@ export type ReviewCanvasContent =
   | { kind: "source"; error?: string }
   | {
       kind: "home";
+      view?: "active" | "trash";
+      navigate?(view: "active" | "trash"): void;
+      openSettings?(): void;
+      openSetup?(): void;
       reviews: readonly ReviewApiSummary[];
       openReview(uuid: string): void;
-      // Deletes the review and closes its canvas. Absent when the host does
+      // Moves the review to Trash and closes its canvas. Absent when the host does
       // not support deletion.
+      trashReview?(uuid: string): Promise<void>;
+      // Boards in Trash can be restored for 30 days or deleted.
       deleteReview?(uuid: string): Promise<void>;
-      // Dismissal is reversible: it stamps the review and frees its pinned
-      // checkouts. Deletion is immediate and permanent. Absent when the host does
-      // not support them.
-      dismissReview?(uuid: string): Promise<void>;
       restoreReview?(uuid: string): Promise<void>;
+      hostStates?(): Promise<ReviewGatewayHostState[]>;
       // Opens the review and pins its read-only source tree open. Absent when
       // the host cannot show the tree.
       openSourceTree?(uuid: string): void;
-      // With no reviews, Home renders the Welcome rail instead of a zero
-      // state of its own, so it needs what Welcome needs. Both absent when
-      // the install status endpoint is unavailable.
+      // Setup status is available for small catalogs so Home can show
+      // progress. Absent when the install status endpoint is unavailable.
       install?: ReviewCanvasInstallContent;
       setupActions?: ReviewCanvasSetupActions;
       onboarding?: ReviewCanvasOnboarding;
@@ -807,7 +831,9 @@ export interface ReviewMenuRequest {
 }
 
 export interface ReviewCanvasUi {
-  confirmDelete?(title: string): Promise<boolean>;
+  setupTooltip?: ReviewCanvasBridge["setupTooltip"];
+  confirmDelete?(titles: readonly string[]): Promise<boolean>;
+  notify?: ReviewCanvasBridge["notify"];
   showMenu(request: ReviewMenuRequest): ReviewDisposable;
 }
 
@@ -864,6 +890,37 @@ export interface ReviewServerHealthWithToken extends ReviewServerHealth {
   serverId: string; // stable, one per review store
   serverPid: number;
   commit: string | null;
+}
+
+export const ReviewGatewayHostSchema = z.strictObject({
+  alias: requiredString,
+  endpoint: z
+    .strictObject({ url: requiredString, token: requiredString })
+    .optional(),
+  problem: z
+    .strictObject({
+      state: z.enum(["unreachable", "not-installed", "auth-failed"]),
+      detail: stringAllowEmpty,
+    })
+    .optional(),
+});
+
+export type ReviewGatewayHost = z.infer<typeof ReviewGatewayHostSchema>;
+
+export interface ReviewGatewayHostState {
+  alias: string;
+  serverId?: string;
+  state:
+    | "connecting"
+    | "online"
+    | "offline"
+    | "incompatible"
+    | "duplicate"
+    | "unreachable"
+    | "not-installed"
+    | "auth-failed";
+  detail?: string;
+  installCommand?: string;
 }
 
 export const ReviewRepositoryIdentitySchema = z.strictObject({
@@ -951,8 +1008,12 @@ export type ReviewTutorialOpenResponse = z.infer<
 
 export const ReviewStackLayerSchema = z.strictObject({
   branch: requiredString,
-  pullRequestNumber: positiveInteger,
+  pullRequestNumber: positiveInteger.nullable(),
   pullRequestUrl: absoluteUrlSchema.nullable(),
+  /** Where a new review of an unreviewed local branch starts. */
+  base: requiredString.nullable(),
+  /** A local branch's oldest commit subject. */
+  subject: requiredString.nullable(),
   reviewUuid: z.uuid({ error: "must be a UUID" }).nullable(),
   reviewTitle: stringAllowEmpty.nullable(),
   relation: z.enum(["earlier", "current", "later"]),

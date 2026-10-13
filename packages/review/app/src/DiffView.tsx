@@ -32,14 +32,14 @@ import {
 import { AuthoringActivityContext } from "./authoring-activity-context";
 import { scopeLive } from "./authoring-cursor";
 import { Courier, LensCursorContext, lensRowElement } from "./courier";
-import { compactDiffCount, diffCountStyles } from "./diff-count";
+import { DiffCountHalves, diffCountStyles } from "./diff-count";
 import { type MotionPhase, withErasedBlocks } from "./draw-queue";
 import { useMotionPhases } from "./draw-queue-provider";
 import { drawStyles } from "./draw-styles";
 import { useReviewSession } from "./host/review-session";
 import {
   diffWorkspaceMarker,
-  lensToggleMarker,
+  lensChipMarker,
   scopedDiffMarker,
 } from "./markers.stylex";
 import { useReviewDiffFiles } from "./review-diff-files-context";
@@ -51,6 +51,7 @@ import {
 } from "./side-panel-resizer";
 import { withClass } from "./stylex-props";
 import { tokens } from "./tokens.stylex";
+import { useTutorial } from "./tutorial-context";
 import { ProgressRing } from "./ui/progress-ring";
 import { useTooltip } from "./use-tooltip";
 import { ViewedButton } from "./viewed-button";
@@ -124,14 +125,10 @@ export function DiffCounts({
       ) : progress.state === "folded" ? (
         "Folded"
       ) : (
-        <>
-          <span {...stylex.props(diffCountStyles.added)}>
-            +{compactDiffCount(remaining.additions)}
-          </span>
-          <span {...stylex.props(diffCountStyles.removed)}>
-            −{compactDiffCount(remaining.deletions)}
-          </span>
-        </>
+        <DiffCountHalves
+          additions={remaining.additions}
+          deletions={remaining.deletions}
+        />
       )}
     </span>
   );
@@ -173,6 +170,8 @@ export function ReviewDiffView({
   });
 
   const lenses = useReviewLenses();
+  // The courier would nudge the lens the tour rings.
+  const tutorial = useTutorial();
   const diffFiles = useReviewDiffFiles();
   const lens = scope ? undefined : lenses?.active;
   const [lensList, setLensList] = useState<HTMLDivElement | null>(null);
@@ -364,25 +363,27 @@ export function ReviewDiffView({
                   >
                     <button
                       {...stylex.props(
-                        lensToggleMarker,
                         styles.toggle,
                         empty && styles.toggleEmpty,
                         selected && styles.toggleActive,
                         stats.state === "viewed" && !selected && styles.faded,
                       )}
                       aria-pressed={selected}
+                      data-tour-target="lens"
                       disabled={!!item.unavailable || (empty && !selected)}
                       onClick={() =>
                         selected ? lenses.clear() : lenses.select(item.id)
                       }
                     >
-                      {/* The title sits on the chip, not the toggle, so it
-                          never stacks on the counts' own tooltip. */}
+                      {/* The title and hover wash sit on the chip, not the
+                          toggle, so they never stack on the counts' tooltip. */}
                       <span
                         {...stylex.props(
+                          lensChipMarker,
                           styles.chip,
                           selected && styles.chipActive,
                         )}
+                        data-tour-target="lens-chip"
                         title={
                           item.unavailable ??
                           (selected ? "Clear lens filter" : undefined)
@@ -432,7 +433,10 @@ export function ReviewDiffView({
                     <ViewedButton
                       progress={stats}
                       disabled={
-                        lenses.busy || !!item.unavailable || !!item.pending
+                        lenses.readOnly ||
+                        lenses.busy ||
+                        !!item.unavailable ||
+                        !!item.pending
                       }
                       label={item.title}
                       onClick={() =>
@@ -447,11 +451,13 @@ export function ReviewDiffView({
                 </section>
               );
             })}
-            <Courier
-              scope="lenses"
-              container={lensList}
-              find={lensRowElement}
-            />
+            {!tutorial && (
+              <Courier
+                scope="lenses"
+                container={lensList}
+                find={lensRowElement}
+              />
+            )}
           </div>
           <div
             {...cabinetsResize.separatorProps}
@@ -523,7 +529,14 @@ export function ReviewDiffView({
           <NativeDiffView
             treeContainer={fullTree}
             progress={fullProgress}
-            onToggleViewed={(path) => markFile(path, false)}
+            onToggleViewed={
+              lenses.readOnly ? undefined : (path) => markFile(path, false)
+            }
+            onSetViewed={
+              lenses.readOnly
+                ? undefined
+                : (ranges, viewed) => lenses.mark(ranges, viewed)
+            }
             hidden={!!lens}
             inWorkspace
           />
@@ -533,7 +546,14 @@ export function ReviewDiffView({
             lens={lens}
             treeContainer={lensTree}
             progress={lensProgress}
-            onToggleViewed={(path) => markFile(path, true)}
+            onToggleViewed={
+              lenses.readOnly ? undefined : (path) => markFile(path, true)
+            }
+            onSetViewed={
+              lenses.readOnly
+                ? undefined
+                : (ranges, viewed) => lenses.mark(ranges, viewed)
+            }
             inWorkspace
           />
         )}
@@ -555,6 +575,7 @@ function NativeDiffView({
   treeContainer,
   progress,
   onToggleViewed,
+  onSetViewed,
   hidden = false,
   inWorkspace = false,
 }: {
@@ -565,6 +586,10 @@ function NativeDiffView({
   treeContainer?: HTMLElement;
   progress?: ReviewDiffProgress;
   onToggleViewed?(path: string): void;
+  onSetViewed?(
+    ranges: ReviewDiffLens["ranges"],
+    viewed: boolean,
+  ): void | Promise<void>;
   hidden?: boolean;
   /** Fills the workspace's editor column. */
   inWorkspace?: boolean;
@@ -577,9 +602,9 @@ function NativeDiffView({
   const revision = useReviewDiffFiles().revision;
   const liveRevision = scope ? undefined : revision;
 
-  const current = useRef({ progress, onToggleViewed });
+  const current = useRef({ progress, onToggleViewed, onSetViewed });
 
-  current.current = { progress, onToggleViewed };
+  current.current = { progress, onToggleViewed, onSetViewed };
   useLayoutEffect(() => {
     if (!container) return;
     setError(null);
@@ -593,6 +618,9 @@ function NativeDiffView({
         progress: current.current.progress,
         onToggleViewed: current.current.onToggleViewed
           ? (path) => current.current.onToggleViewed?.(path)
+          : undefined,
+        onSetViewed: current.current.onSetViewed
+          ? (ranges, viewed) => current.current.onSetViewed?.(ranges, viewed)
           : undefined,
       });
 
@@ -1167,7 +1195,7 @@ const styles = stylex.create({
     borderRadius: radius.pill,
     backgroundColor: {
       default: null,
-      [stylex.when.ancestor(":hover", lensToggleMarker)]: tokens.markerGlow,
+      [stylex.when.ancestor(":hover", lensChipMarker)]: tokens.markerGlow,
     },
   },
   clearMark: {

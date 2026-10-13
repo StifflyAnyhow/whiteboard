@@ -10,12 +10,13 @@ import { Event } from '../../base/common/event.js';
 import { alignmentRows, lensContextGaps, viewedContextGaps } from '../common/reviewLens.js';
 import type { ReviewDiffLens, ReviewDiffProgress } from '../common/reviewProtocol.js';
 import type { ReviewFilesEditorEntry } from './reviewFilesDiffView.js';
+import { StructuralDiffProvider } from './reviewStructuralDiff.js';
 
 export function lensRanges(lens: ReviewDiffLens, entry: ReviewFilesEditorEntry): ReviewDiffLens['ranges'] {
 	return lens.ranges.filter(range => range.file === (range.side === 'base' ? entry.file.previousPath ?? entry.file.path : entry.file.path));
 }
 
-export function withLens(instantiation: IInstantiationService, entries: readonly ReviewFilesEditorEntry[], lens: ReviewDiffLens | undefined, lifetime: DisposableStore, progress: () => ReviewDiffProgress | undefined, onProgress: Event<void>): IInstantiationService {
+export function withLens(instantiation: IInstantiationService, entries: readonly ReviewFilesEditorEntry[], lens: ReviewDiffLens | undefined, lifetime: DisposableStore, progress: () => ReviewDiffProgress | undefined, onProgress: Event<void>, structuralViewed = false, snippet = false): IInstantiationService {
 	const delegate = instantiation.invokeFunction(a => a.get(IDiffProviderFactoryService));
 	const factory: IDiffProviderFactoryService = {
 		_serviceBrand: undefined,
@@ -41,6 +42,9 @@ export function withLens(instantiation: IInstantiationService, entries: readonly
 				onDidChange: Event.any(provider.onDidChange, Event.debounce(relevantProgress, () => undefined, 16)),
 				async computeDiff(original, modified, options, token) {
 					let diff = await provider.computeDiff(original, modified, options, token);
+					if (lens && !lens.wholeFiles && provider instanceof StructuralDiffProvider) {
+						diff = { ...diff, contextGaps: provider.contextGapsForLens() };
+					}
 					const entry = entries.find(entry => entry.original?.toString() === original.uri.toString() || entry.modified?.toString() === modified.uri.toString());
 					if (!entry) return diff;
 					activeEntry = entry;
@@ -50,8 +54,10 @@ export function withLens(instantiation: IInstantiationService, entries: readonly
 					if (!diff.sourceLineAlignment) diff = { ...diff, sourceLineAlignment: alignmentRows(diff, original.getLineCount(), modified.getLineCount()) };
 					const file = progress()?.files.find(file => file.path === entry.file.path);
 					if (file && (!lens || lens.wholeFiles) && !diff.contextGaps) diff = { ...diff, contextGaps: lensContextGaps(diff, original.getLineCount(), modified.getLineCount(), file.changedRanges).map(gap => ({ ...gap, label: 'Unchanged' })) };
-					if (file) diff = { ...diff, contextGaps: viewedContextGaps(diff, original.getLineCount(), modified.getLineCount(), file.viewedRanges, file.changedRanges) };
-					if (file?.unfoldRanges?.length) diff = {
+					if (file && !structuralViewed) diff = { ...diff, contextGaps: viewedContextGaps(diff, original.getLineCount(), modified.getLineCount(), file.viewedRanges, file.changedRanges) };
+					// StructuralViewedState opens newly unviewed scopes once. Reapplying the
+					// legacy range override here would prevent subsequent user folds.
+					if (!structuralViewed && file?.unfoldRanges?.length) diff = {
 						...diff, contextGaps: diff.contextGaps?.map(gap => file.unfoldRanges!.some(range => {
 							const start = range.side === 'base' ? gap.originalStart : gap.modifiedStart;
 							const count = range.side === 'base' ? gap.originalCount : gap.modifiedCount;
@@ -59,7 +65,10 @@ export function withLens(instantiation: IInstantiationService, entries: readonly
 						}) ? { ...gap, collapsed: false } : gap)
 					};
 					const section = progress()?.sections?.find(section => section.id === entry.sectionId);
-					return lens && !lens.wholeFiles ? { ...diff, contextGaps: lensContextGaps(diff, original.getLineCount(), modified.getLineCount(), lensRanges(section ? { ...lens, ranges: section.sources } : lens, entry)) } : diff;
+					if (!lens || lens.wholeFiles) return diff;
+					const gaps = lensContextGaps(diff, original.getLineCount(), modified.getLineCount(), lensRanges(section ? { ...lens, ranges: section.sources } : lens, entry));
+					// A document snippet's folds are hidden lines, not lines outside a lens.
+					return { ...diff, contextGaps: snippet ? gaps.map(gap => gap.label === 'Outside lens' ? { ...gap, label: undefined } : gap) : gaps };
 				},
 			};
 		},

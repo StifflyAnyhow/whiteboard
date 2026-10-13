@@ -12,8 +12,12 @@ import { ReviewTelemetry } from "@review/review-telemetry";
 import { SharedReviewStore } from "@review/sharing/import.js";
 import { reviewTelemetryChannel } from "@review/telemetry-config";
 
-import { listenForDesktopHostShutdown } from "./desktop-host-shutdown";
+import {
+  listenForDesktopHostShutdown,
+  postToDesktop,
+} from "./desktop-host-shutdown";
 import { createGlobalReviewServer } from "./desktop-server";
+import { takeOverServerHome } from "./headless-host";
 import {
   drainServerCrashReport,
   installProcessErrorTelemetry,
@@ -74,46 +78,43 @@ export async function runDesktopHost(
   const home = devReviewHome(env);
   await mkdir(home, { recursive: true });
 
-  const migrationProgress = (message: string) =>
-    process.stdout.write(
-      `${JSON.stringify({ event: "migration", message })}\n`,
-    );
+  const log = (message: string) =>
+    process.stdout.write(`[Whiteboard gateway] ${message}\n`);
 
-  const heartbeat = setInterval(
-    () => migrationProgress("Migrating saved reviews"),
-    5_000,
-  );
+  const { local, shared, server } = await takeOverServerHome(home, async () => {
+    const local = await openReviewProfile(home, {
+      manageWorkspaces: true,
+    });
 
-  const local = await openReviewProfile(home, {
-    manageWorkspaces: true,
-    log: migrationProgress,
-  }).finally(() => {
-    clearInterval(heartbeat);
+    // JSON is the sole user-review store. A failure is surfaced, never replaced
+    // by a second catalog or an old document renderer.
+
+    const shared = new SharedReviewStore(path.join(home, "shared-reviews"));
+    shared.connect(local.store, local.data);
+    await shared.load();
+
+    const server = createGlobalReviewServer({
+      ...serverInput,
+      log,
+      sharedReviews: shared,
+      reviewStore: local.store,
+      reviewData: local.data,
+      cliRuntimePath: env.DEV_FAST_REVIEW_CLI_RUNTIME,
+      crashDumpsDir: env.DEV_FAST_REVIEW_CRASH_DUMPS_DIR,
+      onRemoteHostRestarted: (alias) =>
+        postToDesktop(process, { type: "remote-host-restarted", alias }),
+    });
+
+    try {
+      await server.listen();
+    } catch (error) {
+      await local?.data.close();
+      await local?.store.close();
+      throw error;
+    }
+
+    return { local, shared, server };
   });
-
-  // JSON is the sole user-review store. A failure is surfaced, never replaced
-  // by a second catalog or an old document renderer.
-
-  const shared = new SharedReviewStore(path.join(home, "shared-reviews"));
-  shared.connect(local.store, local.data);
-  await shared.load();
-
-  const server = createGlobalReviewServer({
-    ...serverInput,
-    sharedReviews: shared,
-    reviewStore: local.store,
-    reviewData: local.data,
-    cliRuntimePath: env.DEV_FAST_REVIEW_CLI_RUNTIME,
-    crashDumpsDir: env.DEV_FAST_REVIEW_CRASH_DUMPS_DIR,
-  });
-
-  try {
-    await server.listen();
-  } catch (error) {
-    await local?.data.close();
-    await local?.store.close();
-    throw error;
-  }
 
   process.stdout.write(
     `${JSON.stringify({ event: "ready", ...server.discovery, installationId })}\n`,
@@ -155,6 +156,7 @@ export async function runDesktopHost(
       env.DEV_FAST_REVIEW_RUST_ANALYZER = sourcePath;
       void stageRustAnalyzer();
     },
+    (hosts) => server.setRemoteHosts(hosts),
   );
   process.once("SIGINT", () => {
     void stop().then(() => process.exit(0));

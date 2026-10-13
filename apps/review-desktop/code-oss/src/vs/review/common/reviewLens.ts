@@ -22,7 +22,9 @@ export function lensContextGaps(diff: IDocumentDiff, originalCount: number, modi
 		const enclosing = scopes.map((sideScopes, side) => sideScopes.filter(([start, end]) =>
 			rows.some((row, index) => visible[index] && row[side] !== null && row[side]! >= start && row[side]! < end)));
 		const open = rows.map(row => row.every((line, side) => line === null || !(diff.contextGaps ?? []).some(gap => {
-			if (gap.collapsed === false) return false;
+			// An inline scope folds into its header. Its fold state must not
+			// move the lens boundary and swallow that header's reopen control.
+			if (gap.collapsed === false || gap.band === false) return false;
 			const start = side === 0 ? gap.originalStart : gap.modifiedStart;
 			const count = side === 0 ? gap.originalCount : gap.modifiedCount;
 			return line + 1 >= start && line + 1 < start + count;
@@ -33,7 +35,10 @@ export function lensContextGaps(diff: IDocumentDiff, originalCount: number, modi
 			if (!open[start]) { start++; continue; }
 			let end = start + 1;
 			while (end < rows.length && open[end]) end++;
-			if (seeds.slice(start, end).some(Boolean)) context.fill(true, start, end);
+			// diffr never collapses inside added code, so no band bounds a run of
+			// only added lines (as in an added file). Keep only its seeds.
+			if (rows.slice(start, end).every(row => row[0] === null)) for (let index = start; index < end; index++) context[index] ||= seeds[index];
+			else if (seeds.slice(start, end).some(Boolean)) context.fill(true, start, end);
 			start = end;
 		}
 	}
@@ -48,11 +53,22 @@ export function lensContextGaps(diff: IDocumentDiff, originalCount: number, modi
 			owner: left === originalStart ? 'head' : right === modifiedStart ? 'base' : 'both', change: gapChange(diff, originalStart, left, modifiedStart, right)
 		});
 	}
-	// Keep structural folds only when fully within the visible slice; no overlapping bands.
+	// Keep structural folds only when fully within the visible slice. A lens may
+	// clip a collapsed parent while leaving its child visible, so the provider
+	// supplies nested folds and we retain the outermost one that survives here.
 	const overlap = (a: IDocumentContextGap, b: IDocumentContextGap) =>
 		(a.originalCount > 0 && b.originalCount > 0 && a.originalStart < b.originalStart + b.originalCount && b.originalStart < a.originalStart + a.originalCount) ||
 		(a.modifiedCount > 0 && b.modifiedCount > 0 && a.modifiedStart < b.modifiedStart + b.modifiedCount && b.modifiedStart < a.modifiedStart + a.modifiedCount);
-	return [...gaps, ...(diff.contextGaps ?? []).filter(gap => !gaps.some(hidden => overlap(gap, hidden)))].sort((a, b) => a.originalStart - b.originalStart || a.modifiedStart - b.modifiedStart);
+	const candidates = (diff.contextGaps ?? []).filter(gap => !gaps.some(hidden => overlap(gap, hidden)))
+		.sort((a, b) => b.originalCount + b.modifiedCount - a.originalCount - a.modifiedCount);
+	const folds: IDocumentContextGap[] = [];
+	for (const gap of candidates) {
+		if (folds.some(outer => outer.collapsed !== false &&
+			gap.originalStart >= outer.originalStart && gap.originalStart + gap.originalCount <= outer.originalStart + outer.originalCount &&
+			gap.modifiedStart >= outer.modifiedStart && gap.modifiedStart + gap.modifiedCount <= outer.modifiedStart + outer.modifiedCount)) continue;
+		folds.push(gap);
+	}
+	return [...gaps, ...folds].sort((a, b) => a.originalStart - b.originalStart || a.modifiedStart - b.modifiedStart);
 }
 
 export function alignmentRows(diff: IDocumentDiff, originalCount: number, modifiedCount: number): (readonly [number | null, number | null])[] {

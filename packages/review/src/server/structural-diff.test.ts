@@ -1,21 +1,20 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import * as diffr from "@dev.fast/diffr";
 import type { JsonValue } from "@dev.fast/json";
+import { STRUCTURAL_DIFF_WIRE_VERSION } from "@dev.fast/review-protocol";
 import { afterEach, expect, test, vi } from "vitest";
 
-import {
-  type StructuralDiffRequest,
-  diffrExecutable,
-  structuralDiff,
-} from "./structural-diff";
+import { type StructuralDiffRequest, structuralDiff } from "./structural-diff";
 
 const roots: string[] = [];
 
 afterEach(async () => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
@@ -26,14 +25,15 @@ async function executable(script: string) {
   roots.push(root);
   const file = path.join(root, "diffr");
   await writeFile(file, `#!${process.execPath}\n${script}`, { mode: 0o755 });
-  vi.stubEnv("REVIEW_DIFFR_BINARY", file);
+  vi.spyOn(diffr, "diffrBinaryPath").mockReturnValue(file);
+  vi.stubEnv("XDG_CONFIG_HOME", path.join(root, "config"));
 
   return root;
 }
 
 const START = {
   type: "start",
-  version: 4,
+  version: STRUCTURAL_DIFF_WIRE_VERSION,
   lhs: { type: "revision", rev: "base" },
   rhs: { type: "revision", rev: "head" },
   files: [
@@ -96,7 +96,6 @@ test.each(["trees", "merge-base"] as const)(
       root,
       "--format",
       "ndjson",
-      "--stream-annotations",
       ...(kind === "trees" ? ["base", "head"] : ["base...head"]),
       "--",
       "space name.ts",
@@ -169,8 +168,12 @@ test.each([
 
 test("reports launch failures", async () => {
   const root = await executable("");
-  vi.stubEnv("REVIEW_DIFFR_BINARY", path.join(root, "missing"));
-  await expect(collect(request(root))).rejects.toThrow("Cannot find diffr");
+  vi.spyOn(diffr, "diffrBinaryPath").mockReturnValue(
+    path.join(root, "missing"),
+  );
+  await expect(collect(request(root))).rejects.toThrow(
+    "The bundled diffr executable is missing",
+  );
 });
 
 test("streams a large comparison without treating accumulated file bytes as one record", async () => {
@@ -189,7 +192,7 @@ test("streams a large comparison without treating accumulated file bytes as one 
       for (const { file } of files) await write({
         type: 'file', file,
         diff: {
-          type: 'text', rhs: { text: 'x'.repeat(1024 * 1024), regions: [] },
+          type: 'text', rhs: { text: 'x'.repeat(1024 * 1024), root: {kind:'leaf',id:1,fold_state_id:1,alignment_id:1,start:{line:0,column:0},end:{line:0,column:1024*1024}} },
           structural_changes: { base: [], head: [[0, 1]] },
           stats: { textual: { added: 1, removed: 0 }, visible: { added: 1, removed: 0 } },
         },
@@ -218,16 +221,28 @@ test("streams a large comparison without treating accumulated file bytes as one 
   expect(complete).toBe(true);
 });
 
+test("accepts a generated-parser-sized individual record", async () => {
+  const root = await executable(`
+    ${emit(START)}
+    process.stdout.write(JSON.stringify({
+      ...${JSON.stringify(BINARY)}, padding: 'x'.repeat(80 * 1024 * 1024),
+    }) + '\\n');
+    ${emit(COMPLETE)}
+  `);
+
+  expect(await collect(request(root))).toEqual([START, BINARY, COMPLETE]);
+});
+
 test("rejects an oversized individual record", async () => {
   const root = await executable(`
     ${emit(START)}
     process.stdout.write(JSON.stringify({
-      ...${JSON.stringify(BINARY)}, oversized: 'x'.repeat(65 * 1024 * 1024),
+      ...${JSON.stringify(BINARY)}, oversized: 'x'.repeat(97 * 1024 * 1024),
     }) + '\\n');
   `);
 
   await expect(collect(request(root))).rejects.toThrow(
-    "Structural diff record exceeded 64 MiB",
+    "Structural diff record exceeded 96 MiB",
   );
 });
 
@@ -238,14 +253,13 @@ test("cancellation terminates the subprocess", async () => {
   ).rejects.toThrow(/abort|exited/i);
 });
 
-test("renews the idle deadline when the subprocess delivers another record", async () => {
+test("lets a started comparison finish a slow plugin without an output deadline", async () => {
   const root = await executable(`
     ${emit(START)}
     const timer = setInterval(() => {
       if (require('node:fs').existsSync('continue')) {
         clearInterval(timer);
-        ${emit(BINARY)}
-        setInterval(() => {}, 1000);
+        ${emit(BINARY)} ${emit(COMPLETE)}
       }
     }, 10);
   `);
@@ -255,16 +269,29 @@ test("renews the idle deadline when the subprocess delivers another record", asy
 
   try {
     expect((await iterator.next()).value?.type).toBe("start");
-    vi.advanceTimersByTime(119_000);
-    await writeFile(path.join(root, "continue"), "");
-    expect((await iterator.next()).value).toEqual(BINARY);
     const pending = iterator.next();
     void pending.catch(() => {});
 
-    vi.advanceTimersByTime(2_000);
-    // The original deadline has passed, but the renewed one is still pending.
-    expect(vi.getTimerCount()).toBe(1);
-    vi.advanceTimersByTime(118_000);
+    vi.advanceTimersByTime(600_000);
+    await writeFile(path.join(root, "continue"), "");
+    expect((await pending).value).toEqual(BINARY);
+    expect((await iterator.next()).value).toEqual(COMPLETE);
+    expect((await iterator.next()).done).toBe(true);
+  } finally {
+    await iterator.return(undefined);
+  }
+});
+
+test("cancellation still terminates a comparison after its manifest arrives", async () => {
+  const root = await executable(`${emit(START)} setInterval(() => {}, 1000);`);
+  const abort = new AbortController();
+  const iterator = structuralDiff(request(root, { signal: abort.signal }));
+
+  try {
+    expect((await iterator.next()).value?.type).toBe("start");
+    const pending = iterator.next();
+    void pending.catch(() => {});
+    abort.abort();
     await expect(pending).rejects.toThrow(/abort|exited/i);
   } finally {
     await iterator.return(undefined);
@@ -320,70 +347,6 @@ test("rendering and coverage share a stream; cancelling one reader preserves the
   } finally {
     cache.close();
   }
-});
-
-test("annotation failure is data, preserves files, and explains exit 2", async () => {
-  const annotation = {
-    type: "annotations",
-    file: FILE,
-    annotations: [],
-    error: { code: "enrichment_failed", message: "offline" },
-  };
-
-  const root = await executable(
-    `${emit(START)} ${emit(BINARY)} ${emit(annotation)} ${emit(COMPLETE)} process.exitCode = 2;`,
-  );
-
-  expect(await collect(request(root))).toEqual([
-    START,
-    BINARY,
-    annotation,
-    COMPLETE,
-  ]);
-});
-
-test("coverage can detach after initial files while summaries continue for later readers", async () => {
-  const { StructuralComparisons } = await import("./structural-comparisons.js");
-
-  const annotation = {
-    type: "annotations",
-    file: FILE,
-    annotations: [{ region_id: 1, label: "summary" }],
-  };
-
-  const root = await executable(`
-    require('node:fs').appendFileSync('runs', 'x');
-    ${emit(START)} ${emit(BINARY)}
-    const timer = setInterval(() => { if(require('node:fs').existsSync('continue')) { clearInterval(timer); ${emit(annotation)} ${emit(COMPLETE)} } }, 10);
-  `);
-
-  const cache = new StructuralComparisons();
-
-  try {
-    for await (const event of cache.stream(request(root)))
-      if (event.type === "file") break;
-    await writeFile(path.join(root, "continue"), "");
-    const events = [];
-
-    for await (const event of cache.stream(request(root))) events.push(event);
-    expect(events).toEqual([START, BINARY, annotation, COMPLETE]);
-    expect(await readFile(path.join(root, "runs"), "utf8")).toBe("x");
-  } finally {
-    cache.close();
-  }
-});
-
-test("uses the bundled binary only when present and no override is set", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "review-bundled-diffr-"));
-  roots.push(root);
-  vi.stubEnv("REVIEW_DIFFR_BINARY", "");
-  expect(diffrExecutable(root)).toBe("diffr");
-  await mkdir(path.join(root, "bin"));
-  const binary = path.join(root, "bin", "diffr");
-  await writeFile(binary, "#!/bin/sh\n", { mode: 0o755 });
-  expect(diffrExecutable(root)).toBe(binary);
-  vi.stubEnv("REVIEW_DIFFR_BINARY", "/elsewhere/diffr");
-  expect(diffrExecutable(root)).toBe("/elsewhere/diffr");
 });
 
 test("keeps the ten most recently read idle comparisons", async () => {

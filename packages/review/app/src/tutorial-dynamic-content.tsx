@@ -1,61 +1,29 @@
 import { fontSize } from "@canvas/scale.stylex";
-import type { ReviewComponentProps } from "@review/review-document-data";
 import * as stylex from "@stylexjs/stylex";
 import type { ReactElement, ReactNode } from "react";
 
-import { useReviewActions } from "./review-context";
-import { withClass } from "./stylex-props";
 import { tokens } from "./tokens.stylex";
 import { useTutorial } from "./tutorial-context";
-import {
-  tutorialFeatureVisible,
-  tutorialViewVisible,
-} from "./tutorial-render-visibility";
-
-type TutorialViewButtonProps = ReviewComponentProps<"TutorialViewButton"> & {
-  children?: ReactNode;
-};
-
-export function TutorialFeature({
-  children,
-}: ReviewComponentProps<"TutorialFeature"> & {
-  children?: ReactNode;
-}): ReactElement | null {
-  const tutorial = useTutorial();
-  const { softwareMapEnabled } = useReviewActions();
-
-  if (
-    !tutorialFeatureVisible({ tutorial: tutorial !== null, softwareMapEnabled })
-  )
-    return null;
-
-  return <>{children}</>;
-}
 
 export function TutorialViewButton({
   view,
   children,
-}: ReviewComponentProps<"TutorialViewButton"> & {
+}: {
+  view: "diff";
   children?: ReactNode;
 }): ReactElement | null {
-  const tutorial = useTutorial();
-  const { softwareMapEnabled } = useReviewActions();
+  if (!useTutorial()) return null;
 
-  if (
-    !tutorialViewVisible(
-      { tutorial: tutorial !== null, softwareMapEnabled },
-      view,
-    )
-  )
-    return null;
-
-  // The class is the tutorial's target.
   return (
     <button
       type="button"
-      {...withClass("tutorial-view-button", styles.button)}
-      data-tutorial-view={view}
-      onClick={() => openReviewView(view)}
+      {...stylex.props(styles.button)}
+      data-tour-target={`open-${view}`}
+      onClick={() =>
+        document
+          .querySelector<HTMLButtonElement>(`[data-tour-target="${view}-tab"]`)
+          ?.click()
+      }
     >
       {children}
       <span aria-hidden="true" {...stylex.props(styles.arrow)}>
@@ -63,19 +31,6 @@ export function TutorialViewButton({
       </span>
     </button>
   );
-}
-
-function openReviewView(view: TutorialViewButtonProps["view"]): void {
-  const ariaLabel = view === "map" ? "Map (Experimental)" : viewLabel(view);
-  document
-    .querySelector<HTMLButtonElement>(
-      `.review-segment[aria-label="${ariaLabel}"]`,
-    )
-    ?.click();
-}
-
-function viewLabel(view: TutorialViewButtonProps["view"]): string {
-  return view.charAt(0).toUpperCase() + view.slice(1);
 }
 
 // A row action is marker text with an ink-faint arrow, never a box; boxes are

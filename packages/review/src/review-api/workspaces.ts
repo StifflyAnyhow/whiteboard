@@ -48,9 +48,8 @@ interface Environment extends WorkspaceStatus {
   role: "base" | "head";
 }
 
-// A lease lasts until the owning Desktop exits; closing the review does not release it.
 const OWNED_ELSEWHERE =
-  "Another Desktop owns this review's language workspaces. Quit that Desktop, then retry.";
+  "Another Whiteboard server is managing this review's language workspaces. Retry once it stops.";
 
 /** Local lifecycle only: source and authored history never depend on preparation.
  * Status/queue/process lifecycle follows #334, retaining the legacy prepare config
@@ -101,29 +100,42 @@ export class ReviewWorkspaces {
       throw error;
     }
 
-    this.stop = store.subscribeCatalog(() => {
+    const stopCatalog = store.subscribeCatalog(() => {
       this.collect();
-      this.releaseDismissed();
+      this.releaseTrashed();
     });
+
+    const stopDeleted = store.subscribe(({ reviewId, deleted }) => {
+      if (!deleted) return;
+      const repositories = this.repositoryDirs();
+      repositories.catch(() => undefined);
+      this.release(reviewId, repositories, () => !this.hasReview(reviewId));
+    });
+
+    this.stop = () => {
+      stopCatalog();
+      stopDeleted();
+    };
+
     this.collect();
-    this.releaseDismissed();
+    this.releaseTrashed();
   }
 
-  // Unset until the first scan, so startup also frees reviews dismissed
+  // Unset until the first scan, so startup also frees reviews trashed
   // while no Desktop was running.
-  private dismissed?: Set<string>;
+  private trashed?: Set<string>;
   private readonly releasing = new Map<string, Promise<void>>();
 
   /**
-   * Frees a newly dismissed review's checkouts to save disk. The review itself
+   * Frees a newly trashed review's checkouts to save disk. The review itself
    * stays; reopening it rebuilds them. Checkouts rebuilt by peeking at a
-   * dismissed review are kept until the next startup or dismissal, since
+   * trashed review are kept until the next startup or move to Trash, since
    * the Desktop's canvas tabs and source windows may still show them.
    */
-  private releaseDismissed() {
-    const dismissed = new Set(this.store.dismissedIds());
-    const released = [...dismissed].filter((id) => !this.dismissed?.has(id));
-    this.dismissed = dismissed;
+  private releaseTrashed() {
+    const trashed = new Set(this.store.trashedIds());
+    const released = [...trashed].filter((id) => !this.trashed?.has(id));
+    this.trashed = trashed;
 
     if (!released.length) return;
 
@@ -131,7 +143,13 @@ export class ReviewWorkspaces {
     // Each release awaits this only after earlier cleanup and logs its failure.
     repositories.catch(() => undefined);
 
-    for (const reviewId of released) this.release(reviewId, repositories);
+    for (const reviewId of released)
+      this.release(reviewId, repositories, () => this.stillTrashed(reviewId));
+  }
+
+  /** Restored since the move to Trash: its checkouts may be in use. */
+  private stillTrashed(reviewId: string) {
+    return this.store.trashedIds().includes(reviewId);
   }
 
   private async repositoryDirs(): Promise<string[]> {
@@ -151,18 +169,26 @@ export class ReviewWorkspaces {
     return this.releasing.get(reviewId) ?? Promise.resolve();
   }
 
-  private release(reviewId: string, repositories = this.repositoryDirs()) {
+  private release(
+    reviewId: string,
+    repositories: Promise<string[]>,
+    stillReleased: () => boolean,
+  ) {
     // Requests started later wait for this release; earlier ones finish first.
     const requests = [...this.requests.values()];
 
     const done = this.cleanup
       .then(async () => {
         await Promise.allSettled(requests);
-        await this.releaseCheckouts(reviewId, await repositories);
+        await this.releaseCheckouts(
+          reviewId,
+          await repositories,
+          stillReleased,
+        );
       })
       .catch((error) => {
         console.error(
-          `Could not free the pinned checkouts of dismissed review ${reviewId}:`,
+          `Could not free the pinned checkouts of review ${reviewId}:`,
           error,
         );
       })
@@ -175,9 +201,12 @@ export class ReviewWorkspaces {
     this.cleanup = done;
   }
 
-  private async releaseCheckouts(reviewId: string, repositories: string[]) {
-    // Restored since the dismissal: its checkouts may be in use.
-    if (!this.store.dismissedIds().includes(reviewId)) return;
+  private async releaseCheckouts(
+    reviewId: string,
+    repositories: string[],
+    stillReleased: () => boolean,
+  ) {
+    if (!stillReleased()) return;
 
     const environments = this.all().filter(
       (item) => item.reviewId === reviewId,
@@ -251,8 +280,7 @@ export class ReviewWorkspaces {
   }
 
   private assertReview(id: string) {
-    if (!this.hasReview(id))
-      throw new ReviewInputError("Review not found.", 404);
+    if (!this.hasReview(id)) this.store.assertExists(id);
   }
 
   async remove(reviewId: string) {
@@ -364,9 +392,11 @@ export class ReviewWorkspaces {
     if (!environment || environment.state !== "cleanup-failed")
       throw new ReviewInputError("Cleanup failure not found.", 404);
 
-    // A dismissed review keeps its record, so collection would skip it.
+    // A trashed review keeps its record, so collection would skip it.
     if (this.store.has(environment.reviewId))
-      this.release(environment.reviewId);
+      this.release(environment.reviewId, this.repositoryDirs(), () =>
+        this.stillTrashed(environment.reviewId),
+      );
     else this.collect(id);
     await this.cleanup;
   }
@@ -647,6 +677,20 @@ export class ReviewWorkspaces {
 
           if (environment.rootPath)
             await removeReviewPrepareArtifacts(environment.rootPath);
+
+          if (
+            environment.repository &&
+            !this.all().some(
+              (other) =>
+                other.id !== environment.id &&
+                other.reviewId === environment.reviewId &&
+                other.repository === environment.repository,
+            )
+          )
+            await removeReviewManagedCheckouts(
+              environment.repository,
+              environment.reviewId,
+            );
 
           this.db
             .prepare("DELETE FROM pinned_environments WHERE id=?")

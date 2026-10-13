@@ -13,9 +13,10 @@ import * as stylex from "@stylexjs/stylex";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
 import { useReviewSession } from "./host/review-session";
+import { INLINE_HOVER_EVENT } from "./inline-hover-event";
 import { useReviewFindRegistration } from "./review-find";
-import { emitReviewInteraction } from "./review-interaction-event";
 import { type ReviewLensView, useReviewLenses } from "./review-lenses";
+import { useOptionalReviewPanel } from "./review-panel";
 import { tokens } from "./tokens.stylex";
 
 const LINE_HEIGHT = 20;
@@ -23,6 +24,9 @@ const LINE_HEIGHT = 20;
 const MAX_VISIBLE_LINES = 18;
 
 const INLINE_HEADER_HEIGHT = 40;
+
+/** Sent up the page from an editor's host once the editor is made in it. */
+export const INLINE_EDITOR_MADE = "review-inline-editor-made";
 
 export function DocumentCodeView({
   path,
@@ -56,8 +60,15 @@ export function DocumentCodeView({
   lenses?: ReviewLensView;
 }) {
   const session = useReviewSession();
+
+  const documentVisible = useOptionalReviewPanel(
+    (state) => state.view === "review",
+  );
+
   const contextLenses = useReviewLenses();
   const lenses = lensesOverride ?? contextLenses;
+  const markRef = useRef(contextLenses?.mark);
+  markRef.current = contextLenses?.mark;
 
   const sources = (countRanges ?? ranges).map((range) => ({
     file: path,
@@ -81,19 +92,9 @@ export function DocumentCodeView({
   progressRef.current = progress;
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
 
-  const handleNavigation = useCallback(
-    () =>
-      emitReviewInteraction(container, {
-        kind: "inline-navigation",
-        path,
-      }),
-    [container, path],
-  );
-
-  const handleHover = useCallback(
-    () => emitReviewInteraction(container, { kind: "inline-hover", path }),
-    [container, path],
-  );
+  const handleHover = useCallback(() => {
+    container?.dispatchEvent(new Event(INLINE_HOVER_EVENT, { bubbles: true }));
+  }, [container]);
 
   const [shouldMount, setShouldMount] = useState(active);
 
@@ -225,6 +226,10 @@ export function DocumentCodeView({
     try {
       handle = inlineEditorFactory.create({
         progress: progressRef.current,
+        onSetViewed:
+          !pins && !lensesOverride && contextLenses
+            ? (ranges, viewed) => markRef.current?.(ranges, viewed)
+            : undefined,
         container,
         path,
         title,
@@ -238,7 +243,6 @@ export function DocumentCodeView({
         countRanges,
         onDidFocus: handleFocus,
         onDidOpen: handleOpen,
-        onDidNavigate: handleNavigation,
         onDidShowHover: handleHover,
       });
     } catch (caught) {
@@ -252,6 +256,7 @@ export function DocumentCodeView({
 
     handle.setCollapsed(collapsedRef.current);
     handleRef.current = handle;
+    container.dispatchEvent(new Event(INLINE_EDITOR_MADE, { bubbles: true }));
 
     for (const resolve of handleWaitersRef.current.splice(0)) resolve(handle);
     setHeight(handle.height);
@@ -274,7 +279,6 @@ export function DocumentCodeView({
     countRangesKey,
     handleFocus,
     handleHover,
-    handleNavigation,
     handleOpen,
     heightMode,
     inlineEditorFactory,
@@ -299,6 +303,10 @@ export function DocumentCodeView({
     handleRef.current?.setCollapsed(collapsed);
   }, [collapsed]);
 
+  useLayoutEffect(() => {
+    if (documentVisible) handleRef.current?.setCollapsed(collapsedRef.current);
+  }, [documentVisible]);
+
   useLayoutEffect(
     () => () => {
       for (const resolve of handleWaitersRef.current.splice(0)) resolve(null);
@@ -312,6 +320,7 @@ export function DocumentCodeView({
         ref={setContainer}
         {...stylex.props(styles.editor)}
         data-review-inline-editor={path}
+        data-tour-target="code-editor"
         data-review-inline-editor-active={active ? "true" : "false"}
         style={{ height }}
       />

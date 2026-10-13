@@ -6,6 +6,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { REVIEW_SSH_ANSWER_CALL, REVIEW_SSH_PROMPT_EVENT, type ReviewSshPromptEvent } from "../common/reviewSshPrompt.js";
+import { ReviewSshPromptRelay } from "./remote/reviewSshPromptRelay.js";
 import { ReviewDesktopChannel } from "./reviewDesktopChannel.js";
 
 const review = "0199a3f2-7c1e-7d4a-9b2f-3e5d6c7b8a90";
@@ -57,7 +59,7 @@ function launchingChannel(picked: string | null = null, zedCli = true) {
 		},
 	};
 	const dialogs = { async showOpenDialog() { return { canceled: picked === null, filePaths: picked ? [picked] : [] }; } };
-	const channel = new ReviewDesktopChannel({} as never, { getWindows: () => [], getFocusedWindow: () => undefined } as never, () => false, dialogs as never, launcher);
+	const channel = new ReviewDesktopChannel({} as never, { getWindows: () => [], getFocusedWindow: () => undefined } as never, () => false, dialogs as never, undefined, launcher);
 	return { channel, launched };
 }
 
@@ -106,4 +108,17 @@ test("opens a file in a picked application only by absolute paths", async () => 
 test("the application picker returns the pick, or null when cancelled", async () => {
 	assert.equal(await launchingChannel("/Applications/TextEdit.app").channel.call("", "chooseApplication"), "/Applications/TextEdit.app");
 	assert.equal(await launchingChannel(null).channel.call("", "chooseApplication"), null);
+});
+
+test("relays ssh prompts to the window and takes its answer", async () => {
+	const relay = new ReviewSshPromptRelay();
+	const channel = new ReviewDesktopChannel({} as never, { getWindows: () => [] } as never, () => false, {} as never, relay);
+	const events: ReviewSshPromptEvent[] = [];
+	channel.listen<ReviewSshPromptEvent>("", REVIEW_SSH_PROMPT_EVENT)((event) => events.push(event));
+
+	const answer = relay.prompt({ alias: "wb-test-a", text: "dev@127.0.0.1's password: ", kind: "secret" });
+	await channel.call("", REVIEW_SSH_ANSWER_CALL, { id: events[0].id, answer: "hunter2" });
+
+	assert.equal(await answer, "hunter2");
+	relay.dispose();
 });

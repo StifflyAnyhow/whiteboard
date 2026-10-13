@@ -2,9 +2,14 @@ packages:
   - "packages/*"
   - "packages/agent-plugins/pi"
   - "packages/review/app"
+  - "diffr/diffr-ts"
+  - "diffr/packages/viewer"
+  - "diffr/packages/claude-code"
+  - "diffr/packages/tui"
   - "apps/*"
 
 catalog:
+  "@parcel/watcher": "2.6.0"
   zod: "4.6.5"
 
 catalogMode: strict
@@ -17,7 +22,11 @@ verifyDepsBeforeRun: false
 minimumReleaseAge: 10080
 minimumReleaseAgeStrict: true
 minimumReleaseAgeExclude:
-  - "@dev.fast/diffr@0.1.10"
+  - "@dev.fast/diffr-darwin-arm64@0.1.17"
+  - "@dev.fast/diffr-darwin-x64@0.1.17"
+  - "@dev.fast/diffr-linux-arm64@0.1.17"
+  - "@dev.fast/diffr-linux-x64@0.1.17"
+  - "@dev.fast/diffr-win32-x64@0.1.17"
   # Ask tracks the latest ACP SDK and adapters, and the CLI packages they pin.
   - "@agentclientprotocol/sdk@1.5.1"
   - "@agentclientprotocol/claude-agent-acp@0.84.0"
@@ -25,15 +34,20 @@ minimumReleaseAgeExclude:
   - "@anthropic-ai/claude-agent-sdk@0.3.284"
   - "@openai/codex@0.158.0"
   - "pi-acp@0.0.34"
+  # Pulled in by @modelcontextprotocol/sdk@1.31.0 (#968). Audited: 8.7.0 -> 8.7.1
+  # only guards a debug log loop; published with provenance from the upstream tag.
+  - "express-rate-limit@8.7.1"
 
 overrides:
-  # @dev.fast/review declares a registry range; this override is what makes
+  # @dev.fast/whiteboard declares a registry range; this override is what makes
   # it resolve to the workspace package. Do not remove it.
   "@dev.fast/local-vcs": "workspace:0.1.0"
   esbuild: "0.28.1"
   hono: "4.13.5"
   postcss: "8.5.23"
-  undici: "7.29.0"
+  source-map-js: "1.2.2"
+  tinypool: "2.2.0"
+  undici: "7.29.1"
   vite: "8.0.16"
 
 # Ask runs the user's own `claude` and `codex` (CLAUDE_CODE_EXECUTABLE and
@@ -41,9 +55,13 @@ overrides:
 ignoredOptionalDependencies:
   - "@anthropic-ai/claude-agent-sdk-*"
   - "@openai/codex-*"
-  # Native libvips conflicts with Linux Electron; use Sharp's WASM fallback.
+  # Sharp runs on its WASM build everywhere (@img/sharp-wasm32).
+  - "@img/sharp-darwin*"
   - "@img/sharp-linux*"
-  - "@img/sharp-libvips-linux*"
+  - "@img/sharp-win32*"
+  - "@img/sharp-libvips-*"
 
 allowBuilds:
   esbuild: true
+  # Ships prebuilt binaries; its install script only builds from source.
+  "@parcel/watcher": false

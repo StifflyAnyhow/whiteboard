@@ -7,7 +7,8 @@ import assert from 'node:assert/strict';
 import { createRequire, registerHooks } from 'node:module';
 import test from 'node:test';
 
-import type { ReviewDiffFileWire, ReviewDiffProgressFile, StructuralLineCounts } from '../common/reviewProtocol.js';
+import type { ReviewDiffFileWire, ReviewDiffProgressFile } from '../common/reviewProtocol.js';
+import type { ReviewFileCounts } from '../common/reviewStructuralDiff.js';
 
 // jsdom ships no types here; the DOM globals below are all this test reads from it.
 const { JSDOM } = createRequire(import.meta.url)('jsdom');
@@ -26,7 +27,7 @@ const progress = (path: string, state: ReviewDiffProgressFile['state'], remainin
 	path, state, remaining: { additions: remaining, deletions: 0 }, total: { additions: 3, deletions: 1 }, viewedRanges: [], changedRanges: [],
 });
 
-function row(state: ReviewDiffProgressFile['state'] | undefined, counts?: StructuralLineCounts) {
+function row(state: ReviewDiffProgressFile['state'] | undefined, counts?: ReviewFileCounts) {
 	const path = 'src/a.ts';
 	const renderer = new ChangedFilesTreeRenderer(
 		new Map(counts ? [[path, counts]] : []),
@@ -54,7 +55,7 @@ test('a viewed file says "Viewed" in place of its counts', () => {
 
 test('a file with changes left to read shows its remaining counts, not greyed', () => {
 	const unread = row('unread');
-	assert.equal(unread.counts, '+3−0');
+	assert.equal(unread.counts, '+3');
 	assert.ok(!unread.row.classList.contains('review-file-folded'));
 	assert.ok(!unread.row.classList.contains('review-file-viewed'));
 });
@@ -63,4 +64,10 @@ test('without progress, the structural counts show and nothing reads as folded',
 	const pending = row(undefined, { added: 4, removed: 1 });
 	assert.equal(pending.counts, '+4−1');
 	assert.ok(!pending.row.classList.contains('review-file-folded'));
+});
+
+test('a file git diffed as text but diffr found binary stays folded with its size', () => {
+	const binary = row(undefined, { binary: true, baseSize: 2048, headSize: 4096 });
+	assert.equal(binary.counts, '2.0 KB → 4.0 KB');
+	assert.ok(binary.row.classList.contains('review-file-folded'));
 });

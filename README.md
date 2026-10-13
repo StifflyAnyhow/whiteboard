@@ -30,7 +30,8 @@ Here’s a 1 min demo video explaining more: https://www.youtube.com/watch?v=ChP
 
 ## Quickstart
 
-1. [Download Whiteboard](https://dev.fast/install) and open the app.
+1. [Download Whiteboard](https://dev.fast/install) and open the app. On macOS
+   you can also run `brew install --cask devdotfast/tap/whiteboard`.
 2. Connect Claude Code, Codex, or another coding agent from the welcome screen.
 3. Ask your agent to review your current branch against up-to-date main and
    open the result in Whiteboard.
@@ -55,7 +56,7 @@ Here are a few example prompts of how to use Whiteboard effectively. We are work
 
 ### For a change to add telemetry:
 
-> Can you explain to me the telemetry changes form the newest posthog pr https://github.com/devdotfast/whiteboard/commit/4837e107946e27ebad50c282eb0f2585210d2a35 -- what are we tracking, how can we build good dashboards or product waterfalls from it? what do we do for hangs, errors, crashes etc... use whiteboard
+> Can you explain to me the telemetry changes from the newest posthog pr https://github.com/devdotfast/whiteboard/commit/4837e107946e27ebad50c282eb0f2585210d2a35 -- what are we tracking, how can we build good dashboards or product waterfalls from it? what do we do for hangs, errors, crashes etc... use whiteboard
 
 If you see anything you don't like, highlight it in your clipboard and give it your agent, and it can re-draw on the Whiteboard to suit your needs!
 

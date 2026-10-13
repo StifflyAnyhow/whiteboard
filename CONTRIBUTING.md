@@ -53,6 +53,8 @@ The product is named Whiteboard, but package names and directories still use
 - `packages/agent-plugins/` contains the plugins and skills for supported
   coding agents.
 - `packages/local-vcs/` contains local version-control helpers.
+- `diffr/` contains the Rust diff engine, CLI, terminal UI, and the
+  `@dev.fast/diffr` TypeScript protocol package under `diffr-ts/`.
 
 The files under `apps/review-desktop/code-oss/` include upstream contribution
 and security documents. Those files apply to Microsoft's VS Code project; this
@@ -66,19 +68,24 @@ Run the full check suite before you open a pull request:
 pnpm run ci
 ```
 
+Diffr has separate Rust and release checks. From `diffr/`, run
+`cargo test --locked` and `cargo fmt --all -- --check`. The monorepo's Diffr Test
+workflow runs these on supported targets and checks the TypeScript contract
+against the binary.
+
 DOM-facing tests run in Chromium through Vitest Browser Mode. Install the
 browser once, then run the headless suite or watch mode:
 
 ```sh
-pnpm --filter @dev.fast/review exec playwright install chromium
-pnpm --filter @dev.fast/review test:browser
-pnpm --filter @dev.fast/review test:browser:watch
+pnpm --filter @dev.fast/whiteboard exec playwright install chromium
+pnpm --filter @dev.fast/whiteboard test:browser
+pnpm --filter @dev.fast/whiteboard test:browser:watch
 ```
 
 Pure Node, filesystem, and server tests run through
-`pnpm --filter @dev.fast/review test:node`.
+`pnpm --filter @dev.fast/whiteboard test:node`.
 
-`pnpm --filter @dev.fast/review test:legacy-corpus` replays a private corpus of
+`pnpm --filter @dev.fast/whiteboard test:legacy-corpus` replays a private corpus of
 legacy Reviews (from before the Whiteboard rename) through migration. Point
 `REVIEW_LEGACY_CORPUS` at a directory whose children are Review UUID folders;
 the script fails if the variable is unset. The corpus is copied before it is

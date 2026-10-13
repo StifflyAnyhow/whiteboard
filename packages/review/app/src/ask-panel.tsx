@@ -7,8 +7,10 @@ import {
   type AskQuestion,
   type AskThreadState,
   askChoiceKinds,
+  askThreadStateSchema,
 } from "@review/ask/thread-state";
 import * as stylex from "@stylexjs/stylex";
+import { useQuery } from "@tanstack/react-query";
 import {
   type ReactElement,
   type ReactNode,
@@ -48,17 +50,19 @@ import { AskSetup, AskSignIn } from "./ask-setup";
 import { askPanelStyles } from "./ask-styles";
 import { useLatest, useThread } from "./ask-thread-stream";
 import { AskAgentTurn, AskWorking, turns } from "./ask-turn";
-import type { AskPresence } from "./ask-window";
+import { canvasQueryKeys } from "./canvas-query";
 import { controlStyles } from "./controls-styles";
+import { formatRelativeTime } from "./format";
 import { useReviewSession } from "./host/review-session";
 import { ArrowUpIcon, ImageIcon, LockIcon } from "./icons";
-import { formatRelativeTime } from "./review-home-view";
-import { useOptionalReviewPanelStore } from "./review-panel";
+import { useAskKey, useOptionalReviewPanelStore } from "./review-panel";
+import type { AskPresence, AskReport } from "./review-panel-model";
 import { fontSize, radius } from "./scale.stylex";
 import type { StyleArg } from "./stylex-props";
 import { tokens } from "./tokens.stylex";
 import { IconButton } from "./ui/button";
 import { Chip } from "./ui/chip";
+import { StatusBanner } from "./ui/status-banner";
 import { surfaceStyles } from "./ui/surface";
 import { useFollowLatest } from "./use-follow-latest";
 import { useTooltip } from "./use-tooltip";
@@ -88,7 +92,7 @@ export function AskPanelContent({
   selection,
   agent: requestedAgent,
   savedThreadId,
-  onPresence,
+  onReport,
   header,
 }: {
   selection: AgentSelection;
@@ -96,8 +100,9 @@ export function AskPanelContent({
   header?: HTMLElement | null;
   /** A saved conversation to reopen instead of asking a new question. */
   savedThreadId?: string;
-  /** What the pill says while the conversation is out of sight. */
-  onPresence?: (presence: AskPresence) => void;
+  /** What the conversation is doing, for the pill to say while it is out
+   * of sight and for closing to warn while its agent works. */
+  onReport?: (report: AskReport) => void;
 }): ReactElement {
   const session = useReviewSession();
   const agents = useAskAgents(session);
@@ -128,6 +133,7 @@ export function AskPanelContent({
   const composer = useRef<HTMLTextAreaElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const panels = useOptionalReviewPanelStore();
+  const askKey = useAskKey();
 
   useEffect(() => {
     if (agents && !agent) setAgent(preferredAskAgent(session, agents)?.id);
@@ -220,6 +226,16 @@ export function AskPanelContent({
     thread?.status === "running" ||
     thread?.status === "waiting";
 
+  // A follow-up can go while the agent answers: it joins the turn, or waits
+  // for it to end.
+  const answering =
+    thread?.status === "running" || thread?.status === "waiting";
+
+  const canAsk =
+    !session.review?.trashedAt &&
+    Boolean(agent) &&
+    (!busy || (answering && !sending));
+
   const post = useCallback(
     async (endpoint: `/${string}`, body: AskRequest = {}) => {
       const response = await session.fetch(endpoint, {
@@ -240,7 +256,7 @@ export function AskPanelContent({
   );
 
   const ask = async (question: AskQuestion) => {
-    if (!agent || busy || thread?.status === "failed") return false;
+    if (!agent || !canAsk || thread?.status === "failed") return false;
     setSending(true);
     setRequestError(null);
 
@@ -403,12 +419,15 @@ export function AskPanelContent({
   const reconnect =
     lost && threadId && panels && !unsaved
       ? () =>
-          panels.getState().openAskView({
-            type: "saved",
-            threadId,
-            selection,
-            agent: thread?.agent ?? agent ?? "claude",
-          })
+          panels.getState().openAskView(
+            {
+              type: "saved",
+              threadId,
+              selection,
+              agent: thread?.agent ?? agent ?? "claude",
+            },
+            { from: askKey, replace: true },
+          )
       : undefined;
 
   // A failed agent starts again, once it is signed back in, say, and asks
@@ -428,7 +447,11 @@ export function AskPanelContent({
     panels &&
     ((lost && unsaved) ||
       (savedThreadId !== undefined && requestError !== null && !thread))
-      ? () => panels.getState().openAsk(selection, thread?.agent ?? agent)
+      ? () =>
+          panels.getState().openAsk(selection, thread?.agent ?? agent, {
+            from: askKey,
+            replace: true,
+          })
       : undefined;
 
   // Reopening starts the agent and loads its session. Whiteboard's saved
@@ -461,16 +484,31 @@ export function AskPanelContent({
           };
 
   const presenceAgent = thread?.agent ?? agent;
+  const reportedThreadId = threadId ?? savedThreadId ?? null;
+
+  // Reopening a saved conversation loses nothing if it stops; an answer
+  // under way does.
+  const working =
+    sending ||
+    thread?.status === "running" ||
+    thread?.status === "waiting" ||
+    (thread?.status === "starting" && !connecting);
 
   useEffect(() => {
-    onPresence?.({
-      agent: presenceAgent,
-      agentName: presence.agentName,
-      status: presence.status,
-      tone: presence.tone,
+    onReport?.({
+      threadId: reportedThreadId,
+      busy: working,
+      presence: {
+        agent: presenceAgent,
+        agentName: presence.agentName,
+        status: presence.status,
+        tone: presence.tone,
+      },
     });
   }, [
-    onPresence,
+    onReport,
+    reportedThreadId,
+    working,
     presenceAgent,
     presence.agentName,
     presence.status,
@@ -593,6 +631,17 @@ export function AskPanelContent({
               />
             ) : null}
 
+            {thread?.queued?.map((queued) => (
+              <AgentChatUserMessage
+                key={queued.id}
+                xstyle={styles.userMessage}
+                bubbleXstyle={[styles.userBubble, styles.queuedBubble]}
+                caption={`Sends when ${agentName} finishes`}
+              >
+                {queued.text}
+              </AgentChatUserMessage>
+            ))}
+
             {thread?.signIn && retry && !requestError ? (
               <AskSignIn
                 agentName={agentName}
@@ -637,7 +686,7 @@ export function AskPanelContent({
             : "@ for files",
         )}
         disabled={thread?.status === "failed"}
-        canAsk={Boolean(agent) && !busy}
+        canAsk={canAsk}
         stop={busy && threadId ? stop : undefined}
         connecting={thread?.status === "starting"}
         status={
@@ -662,6 +711,70 @@ export function AskPanelContent({
         onAsk={ask}
         usage={thread?.usage}
       />
+    </div>
+  );
+}
+
+/** A saved conversation whose checkout is gone, read-only. */
+export function AskReadOnlyThread({
+  selection,
+  threadId,
+  onReport,
+}: {
+  selection: AgentSelection;
+  threadId: string;
+  onReport?: (report: AskReport) => void;
+}): ReactElement {
+  const session = useReviewSession();
+
+  const { data: thread, error } = useQuery({
+    queryKey: canvasQueryKeys.askThread(threadId),
+    queryFn: async () => {
+      const response = await session.fetch(`/ask/${threadId}`);
+
+      if (!response.ok)
+        throw new Error(
+          (await readError(response)) ??
+            "Whiteboard could not load this conversation.",
+        );
+
+      return askThreadStateSchema.parse(await response.json());
+    },
+  });
+
+  useShowOpenThread(threadId);
+
+  const agentName = thread?.agentName ?? "Ask";
+
+  // Nothing runs on a read-only conversation, and it opens no thread to
+  // close.
+  useEffect(() => {
+    onReport?.({
+      threadId: null,
+      busy: false,
+      presence: {
+        agent: thread?.agent,
+        agentName,
+        status: "Read-only",
+        tone: "quiet",
+      },
+    });
+  }, [onReport, thread?.agent, agentName]);
+
+  return (
+    <div {...stylex.props(askPanelStyles.body)}>
+      <div {...stylex.props(styles.thread)}>
+        <AskSelectionQuote selection={selection} />
+        {thread ? <AskTurns thread={thread} onDecide={() => {}} /> : null}
+        {error ? (
+          <p {...stylex.props(askPanelStyles.error)} role="alert">
+            {error.message}
+          </p>
+        ) : null}
+      </div>
+      <StatusBanner xstyle={styles.readOnlyBanner}>
+        Read-only history
+      </StatusBanner>
     </div>
   );
 }
@@ -867,6 +980,12 @@ const styles = stylex.create({
     overflowY: "auto",
     overscrollBehavior: "contain",
   },
+  readOnlyBanner: {
+    borderTopWidth: "1px",
+    borderTopStyle: "solid",
+    borderTopColor: tokens.ruleSoft,
+    borderBottomWidth: 0,
+  },
   userMessage: {
     maxWidth: "88%",
     marginTop: 0,
@@ -874,6 +993,9 @@ const styles = stylex.create({
   userBubble: {
     padding: "10px 14px",
     backgroundColor: tokens.trayRaised,
+  },
+  queuedBubble: {
+    opacity: 0.6,
   },
   attachments: {
     display: "flex",

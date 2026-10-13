@@ -1,8 +1,14 @@
 import { DatabaseSync } from "node:sqlite";
 
+import { AskThreads } from "@review/ask/threads.js";
 import { AskHistory, type AskRecord } from "@review/review-api/ask-history.js";
+import { ReviewInputError } from "@review/review-api/document.js";
+import { createReviewApi } from "@review/review-api/http.js";
+import type { LocalReviewData } from "@review/review-api/local-data.js";
 import { ReviewStore } from "@review/review-api/store.js";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+
+import { initializeReviewStoreSchema } from "./store-schema.js";
 
 const pins = { repositoryId: "repo", base: "base", head: "head" };
 
@@ -78,6 +84,9 @@ it("keeps each review's conversations, newest first, until the review is deleted
   history.delete("newer");
   expect(history.get("newer")).toBeUndefined();
 
+  await store.execute(command({ type: "lifecycle", state: "trash", reviewId }));
+  expect(history.list(reviewId)).toHaveLength(1);
+  expect(() => history.rename("older", "Changed")).toThrow(ReviewInputError);
   await store.execute(command({ type: "delete", reviewId }));
   expect(history.list(reviewId)).toEqual([]);
   expect(history.list("shared-review").map(({ id }) => id)).toEqual(["shared"]);
@@ -85,6 +94,7 @@ it("keeps each review's conversations, newest first, until the review is deleted
 
 it("keeps what the panel showed, and what each agent offered", () => {
   const db = new DatabaseSync(":memory:");
+  initializeReviewStoreSchema(db);
 
   try {
     const history = new AskHistory(db);
@@ -159,4 +169,167 @@ it("reopens a conversation in the new session that replaced one its agent lost, 
     sessionId: "session-new",
     entries,
   });
+});
+
+it("serves a saved conversation without its agent or its checkout", async () => {
+  const { reviewId } = await store.execute(
+    command({
+      type: "create",
+      title: "Payments",
+      target: { kind: "commits", ...pins },
+    }),
+  );
+
+  const entries = [
+    { kind: "user" as const, id: "q", text: "Is this safe?", at: 1 },
+    { kind: "agent" as const, id: "a", text: "It does." },
+  ];
+
+  store.askHistory.save(record(reviewId, "thread", "2026-09-01T10:00:00.000Z"));
+  store.askHistory.saveEntries("thread", entries);
+
+  const api = createReviewApi(
+    store,
+    {} as LocalReviewData,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { threads: {} as AskThreads, agents: async () => [] },
+  );
+
+  const response = await api.request(`/${reviewId}/ask/thread`);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ entries });
+
+  expect((await api.request(`/another-review/ask/thread`)).status).toBe(404);
+});
+
+it("follows as many threads as a review has open over one watch", async () => {
+  const { reviewId } = await store.execute(
+    command({
+      type: "create",
+      title: "Payments",
+      target: { kind: "commits", ...pins },
+    }),
+  );
+
+  const api = createReviewApi(
+    store,
+    {} as LocalReviewData,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      // No agent starts: none of the threads is running.
+      threads: new AskThreads(() => {
+        throw new Error("No agent starts here.");
+      }),
+      agents: async () => [],
+    },
+  );
+
+  // More than a URL could carry; none is running, so each ends at once.
+  const threads = Array.from({ length: 500 }, () => crypto.randomUUID());
+
+  const response = await api.request(`/${reviewId}/ask/watch`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ threads }),
+  });
+
+  expect(response.status).toBe(200);
+
+  const lines = (await response.text())
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+
+  expect(lines).toEqual(threads.map((threadId) => ({ threadId, ended: true })));
+});
+
+it("deleting a board ends its Ask threads and blocks reopening while saved history stays readable", async () => {
+  const { reviewId } = await store.execute(
+    command({
+      type: "create",
+      title: "Payments",
+      target: { kind: "commits", ...pins },
+    }),
+  );
+
+  store.askHistory.save(record(reviewId, "thread", "2026-09-01T10:00:00.000Z"));
+
+  const launch = vi.fn<ConstructorParameters<typeof AskThreads>[0]>(
+    async () => {
+      throw new Error("Agent unavailable");
+    },
+  );
+
+  const threads = new AskThreads(launch);
+
+  const thread = threads.open({
+    id: "thread",
+    reviewId,
+    question: { text: "Check this" },
+    agent: "claude",
+    cwd: "/checkout",
+    head: "head",
+    selection: { title: "Question" },
+    context: "Context",
+  });
+
+  const closed = vi.fn<() => void>();
+  thread.onClose(closed);
+
+  const api = createReviewApi(
+    store,
+    {} as LocalReviewData,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { threads, agents: async () => [] },
+  );
+
+  const request = (route: string, body = {}) =>
+    api.request(route, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  try {
+    const response = await request(
+      "/commands",
+      command({ type: "lifecycle", state: "trash", reviewId }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(closed).toHaveBeenCalledOnce();
+    expect(threads.get("thread")).toBeUndefined();
+    const launches = launch.mock.calls.length;
+    expect((await request(`/${reviewId}/ask/thread/open`)).status).toBe(409);
+    expect(launch).toHaveBeenCalledTimes(launches);
+    expect((await api.request(`/${reviewId}/ask/thread`)).status).toBe(200);
+
+    const watch = await request(`/${reviewId}/ask/watch`, {
+      threads: ["thread"],
+    });
+
+    expect(watch.status).toBe(200);
+    expect(await watch.text()).toContain('"ended":true');
+    expect(() => threads.sweep(Date.now() + 20 * 60_000)).not.toThrow();
+  } finally {
+    threads.closeAll();
+  }
 });

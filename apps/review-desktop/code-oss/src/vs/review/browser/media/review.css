@@ -1260,21 +1260,135 @@ body
   color: var(--vscode-descriptionForeground);
 }
 
-/* The unfold glyph sits where the fold glyph will appear once the region is
-   open: in the glyph margin lane (an 18px square, the editor's line height)
-   at the top-left of the row, not centered under the line numbers and the
-   24px row. Expand, and the collapse glyph lands under the same pointer.
-   Monaco centers the slot inline, hence the important. */
-.review-workbench .monaco-editor .diff-hidden-lines .center > div:first-child {
-  justify-content: flex-start !important;
-  align-items: flex-start !important;
+/* Scope chevrons, rails and braces in structural diffs. The marker blue is
+   fixed because some themes make focusBorder transparent. */
+.review-workbench .monaco-editor {
+  --review-scope-marker: #2B55E6;
 }
-.review-workbench .monaco-editor .diff-hidden-lines .center > div:first-child > a {
+.review-workbench .monaco-editor:is(.vs-dark, .hc-black) {
+  --review-scope-marker: #5B7CFF;
+}
+.review-workbench .monaco-editor .review-fold-chevron {
   display: flex;
-  width: 18px;
-  height: 18px;
   align-items: center;
   justify-content: center;
+  cursor: pointer;
+  opacity: .45;
+}
+.review-workbench .monaco-editor .review-fold-chevron.is-collapsed {
+  opacity: .7;
+}
+.review-workbench .monaco-editor .review-fold-chevron.is-target {
+  opacity: 1;
+  color: var(--review-scope-marker);
+}
+/* Keep the full gutter hit target; only the glyph needs less visual weight. */
+.review-workbench .monaco-editor .review-fold-chevron.codicon,
+.review-workbench .monaco-editor .diff-fold-chevron.codicon,
+.review-workbench .monaco-editor .diff-fold-chevron .codicon {
+  font-size: 12px;
+}
+.review-workbench .monaco-editor.review-fold-rail .view-lines {
+  cursor: pointer;
+}
+.review-workbench .monaco-editor .review-scope-rails {
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+}
+.review-workbench .monaco-editor .review-scope-rail {
+  position: absolute;
+  width: 7px;
+  transform: translateX(-3px);
+  pointer-events: auto;
+  cursor: pointer;
+}
+.review-workbench .monaco-editor .review-scope-rail::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  height: 100%;
+  border-left: 1px solid var(--vscode-editorIndentGuide-background1);
+}
+.review-workbench .monaco-editor .review-scope-rail.is-active::before {
+  border-left-color: var(--review-scope-marker);
+}
+.review-workbench .monaco-editor .review-scope-rail.is-target::before {
+  border-left-width: 2px;
+}
+.review-workbench .monaco-editor .review-scope-brace {
+  color: var(--review-scope-marker) !important;
+}
+.review-workbench .monaco-editor .review-scope-brace.is-target {
+  color: var(--vscode-editor-foreground) !important;
+  background: color-mix(in srgb, var(--review-scope-marker) 30%, transparent);
+  outline: 1px solid var(--review-scope-marker);
+  border-radius: 2px;
+}
+.review-workbench .monaco-editor .review-fold-hint {
+  margin-left: 2ch;
+  color: var(--review-scope-marker);
+  font-family: var(--review-chrome-font, inherit);
+  font-size: 11px;
+}
+
+/* A scope folded into its header line: `opener { ⋯ N lines }`. */
+.review-workbench .monaco-editor .review-fold-pill {
+  margin: 0 .5ch;
+  padding: 0 .6ch;
+  border: 1px solid var(--vscode-editorIndentGuide-activeBackground1);
+  border-radius: 3px;
+  color: var(--vscode-descriptionForeground);
+  font-size: .92em;
+  cursor: pointer;
+}
+.review-workbench .monaco-editor .review-fold-pill.is-target {
+  border-color: var(--review-scope-marker);
+  color: var(--vscode-editor-foreground);
+}
+.review-workbench .monaco-editor .review-fold-closer {
+  color: var(--vscode-editor-foreground);
+  cursor: pointer;
+}
+
+/* A fold inside removed code, drawn as a row of the removed block. */
+.review-workbench .monaco-editor .diff-fold-placeholder {
+  color: var(--vscode-descriptionForeground) !important;
+  opacity: .8;
+}
+.review-workbench .monaco-editor .diff-fold-placeholder-hit:hover {
+  background: color-mix(in srgb, var(--vscode-editor-foreground) 4%, transparent);
+}
+
+/* Align fold labels with the hidden code's indent. */
+.review-workbench .review-files-editor .monaco-editor .diff-hidden-lines:not(.kind-inserted):not(.kind-removed) .center {
+  background: transparent;
+  box-shadow: none;
+}
+.review-workbench .review-files-editor .monaco-editor .diff-hidden-lines .diff-hidden-lines-label {
+  flex: 1;
+  justify-content: flex-start !important;
+  color: var(--vscode-descriptionForeground);
+}
+.review-workbench .monaco-editor .diff-hidden-lines .diff-fold-reveal {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.review-workbench .monaco-editor .diff-hidden-lines .diff-fold-reveal::before {
+  content: "\22EF\00a0";
+}
+.review-workbench .monaco-editor .diff-hidden-lines .diff-fold-reveal:hover {
+  color: var(--review-scope-marker);
+}
+.review-workbench .monaco-editor .diff-hidden-lines .diff-fold-reveal:focus-visible {
+  outline: 1px solid var(--review-scope-marker);
+  outline-offset: 2px;
 }
 
 /* The canvas stylesheet resets every element to border-box, and the Diff
@@ -1304,3 +1418,47 @@ body
 .review-files-editor-diffs .multiDiffEntry:first-child > .review-diff-group {
   border-top: 0;
 }
+
+/* Placeholder rows share the scope chevron lane after the line numbers. */
+.review-workbench .monaco-editor .diff-fold-chevron {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  height: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  opacity: .7;
+  cursor: pointer;
+}
+.review-workbench .monaco-editor .structural-fold.is-target .diff-fold-chevron,
+.review-workbench .monaco-editor .structural-fold.is-target .diff-fold-reveal,
+.review-workbench .monaco-editor .diff-fold-chevron.is-target {
+  color: var(--review-scope-marker);
+  opacity: 1;
+}
+.review-workbench .monaco-editor .diff-fold-chevron:focus-visible {
+  outline: 1px solid var(--review-scope-marker);
+  outline-offset: -2px;
+}
+.review-workbench .monaco-editor .diff-fold-placeholder.is-target {
+  color: var(--review-scope-marker) !important;
+  opacity: 1;
+}
+
+.review-workbench .monaco-editor .diff-hidden-lines .diff-fold-chevron .codicon {
+  color: inherit;
+}
+
+.review-workbench .monaco-editor .review-scope-viewed-ink,
+.review-workbench .monaco-editor .review-scope-viewed-ink span,
+.review-workbench .monaco-editor .review-fold-pill.is-viewed {
+  color: var(--vscode-descriptionForeground) !important;
+}
+.review-workbench .monaco-editor .review-scope-viewed-tint {
+  background: color-mix(in srgb, var(--vscode-editor-background) 70%, transparent);
+}
+.review-workbench .monaco-editor .review-fold-pill.is-viewed:not(.is-target) { opacity: .65; }
