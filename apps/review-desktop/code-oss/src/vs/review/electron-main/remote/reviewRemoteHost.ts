@@ -60,7 +60,6 @@ export const REVIEW_REMOTE_TIMEOUTS = {
 
 const FIRST_DELAY_MS = 1_000;
 const PENDING_REATTACH_MS = 60_000;
-const PENDING_ATTACHES = 10;
 const MAX_DELAY_MS = 60_000;
 const OUTPUT_LIMIT = 64 * 1024;
 
@@ -131,13 +130,12 @@ function probeHealth(port: number, timeout: number): Promise<void> {
 	});
 }
 
-function probeVersion(port: number, timeout: number): Promise<string> {
+function probeVersion(port: number, timeout: number): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const request = get({ host: "127.0.0.1", port, path: "/version", timeout }, (response) => {
-			let body = "";
-			response.setEncoding("utf8");
-			response.on("data", (chunk: string) => (body += chunk));
-			response.on("end", () => (response.statusCode === 200 ? resolve(body.trim()) : reject(new Error(`/version answered ${response.statusCode}`))));
+			response.resume();
+			if (response.statusCode === 200) resolve();
+			else reject(new Error(`/version answered ${response.statusCode}`));
 		});
 		request.on("timeout", () => request.destroy(new Error(`/version did not answer within ${timeout / 1000} seconds`)));
 		request.on("error", reject);
@@ -218,8 +216,7 @@ export class ReviewRemoteHost {
 	private master: SshChildProcess | undefined;
 	private readonly closing = new Map<SshChildProcess, Promise<void>>();
 	private forwarded: { local: number; remote: number } | undefined;
-	private language: { local: number; remote: number; connectionToken: string; commit: string } | undefined;
-	private pendingAttaches = 0;
+	private language: { local: number; remote: number; connectionToken: string } | undefined;
 	private cancelPending: (() => void) | undefined;
 	private serverId: string | null = null;
 	private reattaching = false;
@@ -251,7 +248,6 @@ export class ReviewRemoteHost {
 	retry(): void {
 		if (this.disposed) return;
 		this.failures = 0;
-		this.pendingAttaches = 0;
 		this.set({ alias: this.alias });
 		void this.connect();
 	}
@@ -337,8 +333,8 @@ export class ReviewRemoteHost {
 	async languageEndpoint(serverId: string): Promise<{ host: "127.0.0.1"; port: number; connectionToken: string } | undefined> {
 		const language = this.language;
 		if (!language || this.connectedAt === undefined || this.serverId !== serverId || this.reported.languageFeatures !== true) return undefined;
-		const commit = await probeVersion(language.local, this.timeouts.operation).catch(() => undefined);
-		if (commit === language.commit) return { host: "127.0.0.1", port: language.local, connectionToken: language.connectionToken };
+		const live = await probeVersion(language.local, this.timeouts.operation).then(() => true, () => false);
+		if (live) return { host: "127.0.0.1", port: language.local, connectionToken: language.connectionToken };
 		if (language === this.language) {
 			void this.attachAgain("its VS Code server did not answer", true);
 		}
@@ -348,11 +344,7 @@ export class ReviewRemoteHost {
 	private whilePending(attach: ReviewRemoteAttach): void {
 		this.cancelPending?.();
 		this.cancelPending = undefined;
-		if (!attach.languageServerPending) {
-			this.pendingAttaches = 0;
-			return;
-		}
-		if (++this.pendingAttaches >= PENDING_ATTACHES) return;
+		if (!attach.languageServerPending) return;
 		this.cancelPending = this.clock.schedule(PENDING_REATTACH_MS, () => {
 			this.cancelPending = undefined;
 			void this.attachAgain("its language extensions were installing", true);
@@ -530,13 +522,12 @@ export class ReviewRemoteHost {
 		const forward = await this.run(sshForwardArgs(this.options.session, port, server.port, env), this.timeouts.operation);
 		if (forward.code !== 0) return unavailable(`Could not forward a local port to the VS Code server on ${this.alias}: ${firstLines(forward.stderr) || `ssh exited with code ${forward.code}`}`);
 		try {
-			const commit = await probeVersion(port, this.timeouts.operation);
-			if (commit !== server.commit) throw new Error(`it reports ${commit}, not ${server.commit}`);
+			await probeVersion(port, this.timeouts.operation);
 		} catch (error) {
 			await this.run(sshCancelForwardArgs(this.options.session, port, server.port, env), this.timeouts.operation);
 			return unavailable(`The VS Code server on ${this.alias} did not answer through the forward: ${(error as Error).message}.`);
 		}
-		this.language = { local: port, remote: server.port, connectionToken: server.connectionToken, commit: server.commit };
+		this.language = { local: port, remote: server.port, connectionToken: server.connectionToken };
 		return { languageFeatures: true };
 	}
 
