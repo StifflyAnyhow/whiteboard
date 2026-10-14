@@ -1142,7 +1142,11 @@ it("answers a remote caller's navigator with the host paths a local caller gets"
   expect(readFileSync(answer.filePath, "utf8")).toContain("value = 1");
 
   const added = { ...file, file: "added.ts", empty: "true" };
-  expect(await open(added, remote)).toEqual(await open(added));
+  expect(await open(added, remote)).toEqual({
+    workspacePath: answer.workspacePath,
+    emptySide: true,
+  });
+  expect((await open(added)).filePath).toEqual(expect.any(String));
 });
 
 it("opens a stable native workspace on the Review's pinned checkout at the selected version", async () => {
