@@ -1,9 +1,10 @@
 /** Disposable SSH remotes for live checks, in Docker or on AWS; see ../TESTING.md. */
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { awsUp } from "./aws-hosts.mjs";
-import { containerOf, install, up } from "./docker-hosts.mjs";
+import { containerOf, install, packTarball, up } from "./docker-hosts.mjs";
 import { docker, inherit } from "./exec.mjs";
 import { down, downEveryRun, downRun } from "./removal.mjs";
 import { checkName, hostOf, openRun } from "./run-state.mjs";
@@ -14,7 +15,9 @@ const usage = `usage: remote.mjs <command>
   up <name> [--platform linux/amd64|linux/arm64] [--image <image>] [--node 24|20|none]
             [--auth key|password] [--banner] [--shell bash|fish] [--jump <name>]
             [--sealed] [--delay-ms <n>] [--no-forwarding] [--port <n>]
-  install <name> [--version <v>]
+            [--toolchain rust|swift|dotnet]
+  install <name> [--version <v>] [--commit <VS Code server commit>]
+  pack --out <file.tar.xz> [--version <v>] [--arch x64|arm64]
   ssh <name> -- <command...>
   forward <name> <remote port>
   pause <name> | resume <name> | logs <name>
@@ -24,7 +27,7 @@ const usage = `usage: remote.mjs <command>
 
 The run is WB_TEST_RUN, else the only one in /tmp/wbt.*.`;
 
-const commandsWithoutName = new Set(["verify-clean", "down"]);
+const commandsWithoutName = new Set(["verify-clean", "down", "pack"]);
 
 async function main(argv) {
   const split = argv.indexOf("--");
@@ -45,7 +48,10 @@ async function main(argv) {
       "delay-ms": { type: "string" },
       "no-forwarding": { type: "boolean" },
       port: { type: "string" },
+      toolchain: { type: "string" },
       version: { type: "string" },
+      commit: { type: "string" },
+      out: { type: "string" },
       arch: { type: "string" },
       all: { type: "boolean" },
       "every-run": { type: "boolean" },
@@ -68,7 +74,24 @@ async function main(argv) {
     case "aws-up":
       return awsUp(await openRun(true), name, values);
     case "install":
-      return install(await openRun(false), name, values.version);
+      if (values.commit !== undefined && !/^[0-9a-f]{40}$/.test(values.commit))
+        throw new Error("--commit must be 40 hex digits");
+
+      return install(await openRun(false), name, {
+        version: values.version,
+        commit: values.commit,
+      });
+    case "pack":
+      if (!values.out) throw new Error("pack needs --out <file.tar.xz>");
+
+      return console.log(
+        JSON.stringify(
+          await packTarball(path.resolve(values.out), {
+            version: values.version,
+            arch: values.arch,
+          }),
+        ),
+      );
     case "ssh": {
       const runState = await openRun(false);
 

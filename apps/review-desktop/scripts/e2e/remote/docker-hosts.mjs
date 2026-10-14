@@ -1,7 +1,10 @@
 /** Hosts in Docker containers: the image, `up`, `install`, and the sealed network. */
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, readFile } from "node:fs/promises";
 import path from "node:path";
+
+import { buildDevRemoteTarball } from "../../build-remote-tarball.mjs";
+import { remoteDevInstall } from "../../remote-dev-install.mjs";
 
 import { addOnce, docker, exec, run, sleep } from "./exec.mjs";
 import { hostOf } from "./run-state.mjs";
@@ -9,19 +12,23 @@ import { waitForSsh } from "./ssh.mjs";
 
 const imageDir = path.join(import.meta.dirname, "image");
 
-const packageDir = path.resolve(
-  import.meta.dirname,
-  "../../../../../packages/review",
-);
+const TOOLCHAIN_IMAGES = {
+  rust: "rust:1.98-bookworm",
+  swift: "swift:6.4-noble",
+  dotnet: "mcr.microsoft.com/dotnet/sdk:10.0-noble",
+};
 
 /** Tags are per run, so removing one run's tag never touches another run's containers. */
-async function buildImage(runState, { platform, image, node, shell }) {
+async function buildImage(
+  runState,
+  { platform, image, node, shell, toolchain },
+) {
   const hash = createHash("sha256");
 
   for (const file of ["Dockerfile", "setup.sh", "start.sh"])
     hash.update(await readFile(path.join(imageDir, file)));
 
-  hash.update(JSON.stringify([platform, image, node, shell]));
+  hash.update(JSON.stringify([platform, image, node, shell, toolchain]));
 
   const tag = `wb-test-${runState.id}-image:${hash.digest("hex").slice(0, 12)}`;
 
@@ -37,6 +44,8 @@ async function buildImage(runState, { platform, image, node, shell }) {
     `NODE=${node}`,
     "--build-arg",
     `LOGIN_SHELL=${shell}`,
+    "--build-arg",
+    `TOOLCHAIN=${toolchain}`,
     "-t",
     tag,
     imageDir,
@@ -113,11 +122,17 @@ export async function up(runState, name, options) {
 
   if (jump && port) throw new Error("--port and --jump cannot be combined");
 
+  const toolchain = options.toolchain ?? "none";
+
+  if (toolchain !== "none" && !TOOLCHAIN_IMAGES[toolchain])
+    throw new Error(`--toolchain ${toolchain}: expected rust, swift or dotnet`);
+
   const image = await buildImage(runState, {
     platform: options.platform,
-    image: options.image ?? "ubuntu:22.04",
+    image: options.image ?? TOOLCHAIN_IMAGES[toolchain] ?? "ubuntu:22.04",
     node: options.node ?? "24",
     shell: options.shell ?? "bash",
+    toolchain,
   });
 
   const network = `wb-test-${runState.id}`;
@@ -180,14 +195,6 @@ export async function up(runState, name, options) {
   );
 
   if (options.sealed) {
-    host.defaultRoute = await docker(
-      "exec",
-      container,
-      "ip",
-      "route",
-      "show",
-      "default",
-    );
     host.sealed = true;
     await runState.save();
     await seal(runState, host);
@@ -290,63 +297,36 @@ export function containerOf(runState, name) {
   return host;
 }
 
-/** Packs packages/review from this worktree and installs it globally; a sealed host gets its route back meanwhile. */
-export async function install(runState, name, version) {
+export async function packTarball(out, { version, arch = "x64" } = {}) {
+  const built = await buildDevRemoteTarball({
+    target: `linux-${arch}`,
+    version,
+    stdio: ["ignore", process.stderr, process.stderr],
+  });
+
+  await copyFile(built.file, out);
+
+  return { ...built, file: out };
+}
+
+/** Installs this checkout's tarball as a hand install would, with a `whiteboard` on the default PATH. */
+export async function install(runState, name, { version, commit } = {}) {
   const host = containerOf(runState, name);
-  const scratch = await mkdtemp(`${runState.dir}/pack-`);
 
-  try {
-    await run("pnpm", [
-      "--dir",
-      packageDir,
-      "pack",
-      "--pack-destination",
-      scratch,
-    ]);
-
-    const [packed] = (await readdir(scratch)).filter((f) => f.endsWith(".tgz"));
-    let tarball = path.join(scratch, packed);
-
-    await run("tar", ["-xzf", tarball, "-C", scratch]);
-
-    const manifestPath = path.join(scratch, "package/package.json");
-    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-
-    if (version) {
-      manifest.version = version;
-      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-      tarball = path.join(scratch, "stamped.tgz");
-      await run("tar", ["-czf", tarball, "-C", scratch, "package"]);
-    }
-
-    await docker("cp", tarball, `${host.container}:/tmp/wb-test-package.tgz`);
-
-    if (host.sealed)
-      await netAdmin(
-        runState,
-        host.image,
-        `container:${host.container}`,
-        `ip route add ${host.defaultRoute}`,
-      );
-
-    try {
-      await docker(
-        "exec",
-        host.container,
-        "npm",
-        "install",
-        "-g",
-        "--no-audit",
-        "--no-fund",
-        "/tmp/wb-test-package.tgz",
-      );
-    } finally {
-      if (host.sealed) await seal(runState, host);
-    }
-
-    await docker("exec", host.container, "rm", "/tmp/wb-test-package.tgz");
-    console.log(`${manifest.name}@${manifest.version}`);
-  } finally {
-    await rm(scratch, { recursive: true, force: true });
-  }
+  console.log(
+    await remoteDevInstall(host.alias, {
+      sshConfig: `${runState.dir}/ssh_config`,
+      version,
+      commit,
+      stdio: ["ignore", process.stderr, process.stderr],
+    }),
+  );
+  await docker(
+    "exec",
+    host.container,
+    "ln",
+    "-sf",
+    `/home/${host.user}/.local/bin/whiteboard`,
+    "/usr/local/bin/whiteboard",
+  );
 }

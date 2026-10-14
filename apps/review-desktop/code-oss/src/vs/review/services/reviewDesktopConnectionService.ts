@@ -28,6 +28,9 @@ parseReviewTutorialOpenResponse,
 type ReviewCliInstallApplyResponse,
 type ReviewCliInstallStatus,
 type ReviewGatewayHostState,
+type ReviewRemoteAgent,
+type ReviewRemoteAgentId,
+type ReviewRemoteAgentResult,
 type ReviewTutorialOpenResponse,
 type ReviewVerbResponse
 } from "../common/reviewProtocol.js";
@@ -45,6 +48,12 @@ export interface ReviewServerConnection {
 	readonly appSessionId: string;
 }
 
+
+export interface ReviewRemoteLanguageEndpoint {
+	readonly host: string;
+	readonly port: number;
+	readonly connectionToken: string;
+}
 
 export const IReviewDesktopConnectionService = createDecorator<IReviewDesktopConnectionService>(
 	"reviewDesktopConnectionService",
@@ -78,6 +87,11 @@ export interface IReviewDesktopConnectionService {
 	readRemoteHosts(): Promise<ReviewGatewayHostState[]>;
 	listSshAliases(): Promise<string[]>;
 	retryRemoteHost(alias: string): Promise<void>;
+	getRemoteLanguageEndpoint(serverId: string): Promise<ReviewRemoteLanguageEndpoint | undefined>;
+	installRemoteHost(alias: string): Promise<void>;
+	detectRemoteAgents(alias: string): Promise<ReviewRemoteAgent[] | null>;
+	connectRemoteAgents(alias: string, agents: ReviewRemoteAgentId[]): Promise<ReviewRemoteAgentResult[]>;
+	uninstallRemoteHost(alias: string): Promise<void>;
 	getTutorialStatus(): Promise<{ version: 1; reviewUuid: string | null }>;
 	prepareTutorial(): Promise<void>;
 	openTutorial(): Promise<ReviewTutorialOpenResponse>;
@@ -260,6 +274,32 @@ export class ReviewDesktopConnectionService extends Disposable implements IRevie
 
 	async retryRemoteHost(alias: string): Promise<void> {
 		await this.mainProcessService.getChannel(REVIEW_DESKTOP_CHANNEL).call("retryRemoteHost", alias);
+	}
+
+	async getRemoteLanguageEndpoint(serverId: string): Promise<ReviewRemoteLanguageEndpoint | undefined> {
+		const endpoint: unknown = await this.mainProcessService.getChannel(REVIEW_DESKTOP_CHANNEL).call("getRemoteLanguageEndpoint", serverId);
+		if (typeof endpoint !== "object" || endpoint === null) return undefined;
+		const { host, port, connectionToken } = endpoint as Record<string, unknown>;
+		return typeof host === "string" && Number.isInteger(port) && typeof connectionToken === "string"
+			? { host, port: port as number, connectionToken }
+			: undefined;
+	}
+
+	async installRemoteHost(alias: string): Promise<void> {
+		await this.mainProcessService.getChannel(REVIEW_DESKTOP_CHANNEL).call("installRemoteHost", alias);
+	}
+
+	detectRemoteAgents(alias: string): Promise<ReviewRemoteAgent[] | null> {
+		return this.mainProcessService.getChannel(REVIEW_DESKTOP_CHANNEL).call("detectRemoteAgents", alias);
+	}
+
+	connectRemoteAgents(alias: string, agents: ReviewRemoteAgentId[]): Promise<ReviewRemoteAgentResult[]> {
+		return this.mainProcessService.getChannel(REVIEW_DESKTOP_CHANNEL).call("connectRemoteAgents", { alias, agents });
+	}
+
+	async uninstallRemoteHost(alias: string): Promise<void> {
+		const problem: unknown = await this.mainProcessService.getChannel(REVIEW_DESKTOP_CHANNEL).call("uninstallRemoteHost", alias);
+		if (typeof problem === "string") throw new Error(problem);
 	}
 
 	async saveDiffrSummarizer(input: ReviewDiffrSummarizerInput): Promise<ReviewDiffrConfig> {

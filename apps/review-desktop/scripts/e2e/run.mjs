@@ -25,7 +25,9 @@ for (const file of (await readdir(journeysDir))
 
 if (values.list) {
   console.log(
-    JSON.stringify(journeys.map(({ name, phase }) => ({ name, phase }))),
+    JSON.stringify(
+      journeys.map(({ name, phase, manual }) => ({ name, phase, manual })),
+    ),
   );
   process.exit(0);
 }
@@ -39,7 +41,8 @@ const selected = values.journey
       return found;
     })
   : journeys.filter(
-      (j) => j.phase === 1 || process.env.REVIEW_E2E_NETWORK === "1",
+      (j) =>
+        !j.manual && (j.phase === 1 || process.env.REVIEW_E2E_NETWORK === "1"),
     );
 
 if (!values.runtime)
@@ -53,16 +56,21 @@ const summary = [];
 
 for (const journey of selected) {
   let ctx;
+  let prepared;
 
   try {
+    // `prepare` runs before Desktop launches, and adds to its environment.
+    prepared = await journey.prepare?.({ app: values.app });
     ctx = await createHarness({
       runtime,
       app: values.app,
       keep: values.keep,
       journey: journey.name,
       ...journey.options,
+      env: { ...journey.options?.env, ...prepared?.env },
     });
   } catch (caught) {
+    await prepared?.dispose();
     // A journey whose Desktop never launches still owes the suite a summary.
     summary.push({
       journey: journey.name,
@@ -89,6 +97,7 @@ for (const journey of selected) {
   } finally {
     // A renderer page error fails the journey without aborting the suite.
     if (!(await ctx.close({ success: status !== "failed" }))) status = "failed";
+    await prepared?.dispose();
   }
 
   summary.push({

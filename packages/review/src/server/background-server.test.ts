@@ -22,6 +22,7 @@ import {
   REVIEW_REMOTE_ATTACH_END,
 } from "@dev.fast/review-protocol";
 import { processStartIdentity } from "@dev.fast/trace-core";
+import { remoteAttach } from "@review/remote-attach.js";
 import { ReviewApiClient } from "@review/review-api/client.js";
 import { openReviewProfile } from "@review/review-api/profile.js";
 import {
@@ -261,6 +262,9 @@ it("attaches with one JSON line between the sentinels, and its token reaches the
     url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
     token: expect.any(String),
     startedServer: true,
+    languageServer: null,
+    languageServerDetail: expect.stringContaining("has no VS Code server"),
+    languageGroups: [],
   });
 
   const reviews = (token?: string) =>
@@ -290,6 +294,110 @@ it("attaches with one JSON line between the sentinels, and its token reaches the
   ).not.toContain(attach.token);
 }, 60_000);
 
+it("with --replace, stops a server of another version the CLI started and starts this one", async () => {
+  const old = await ensureBackgroundServer({ stateDir, env, cli: sourceCli });
+  const oldVersion = (await readReviewServerHealth(old.discovery))!.version;
+
+  const attach = await remoteAttach({
+    stateDir,
+    env,
+    cli: sourceCli,
+    replace: true,
+    version: "9.9.9",
+  });
+
+  expect(attach).toMatchObject({
+    startedServer: true,
+    replaced: true,
+    previousVersion: oldVersion,
+  });
+  expect(attach).not.toHaveProperty("incompatibleRunning");
+  expect(alive(old.discovery.serverPid)).toBe(false);
+  const discovery = (await readReviewServerDiscovery(stateDir))!;
+  expect(discovery.serverPid).not.toBe(old.discovery.serverPid);
+  expect(discovery.startedBy).toBe("desktop");
+}, 60_000);
+
+it("with --replace, leaves a server of another version a user started, and reports it", async () => {
+  const server = spawn(
+    sourceCli[0]!,
+    [
+      ...sourceCli.slice(1),
+      "server",
+      "start",
+      "--json",
+      "--state-dir",
+      stateDir,
+    ],
+    { env, stdio: ["ignore", "pipe", "pipe"] },
+  );
+
+  await readyLine(server);
+  const running = (await readReviewServerDiscovery(stateDir))!;
+
+  const attach = await remoteAttach({
+    stateDir,
+    env,
+    cli: sourceCli,
+    replace: true,
+    version: "9.9.9",
+  });
+
+  expect(attach).toMatchObject({
+    startedServer: false,
+    incompatibleRunning: {
+      version: (await readReviewServerHealth(running))!.version,
+      pid: running.serverPid,
+      startedBy: "user",
+    },
+  });
+  expect(attach).not.toHaveProperty("replaced");
+  expect(alive(running.serverPid)).toBe(true);
+}, 60_000);
+
+it("with --replace, leaves a newer server another Desktop started, and reports it", async () => {
+  const newer = await ensureBackgroundServer({
+    stateDir,
+    env,
+    cli: sourceCli,
+    startedBy: "desktop",
+  });
+
+  const attach = await remoteAttach({
+    stateDir,
+    env,
+    cli: sourceCli,
+    replace: true,
+    version: "0.0.0",
+  });
+
+  expect(attach).toMatchObject({
+    startedServer: false,
+    incompatibleRunning: {
+      version: (await readReviewServerHealth(newer.discovery))!.version,
+      pid: newer.discovery.serverPid,
+      startedBy: "desktop",
+    },
+  });
+  expect(attach).not.toHaveProperty("replaced");
+  expect(alive(newer.discovery.serverPid)).toBe(true);
+}, 60_000);
+
+it("with --replace, keeps a server of the same version", async () => {
+  const first = await cli(["remote", "attach", "--json", "--replace"]);
+  const second = await cli(["remote", "attach", "--json", "--replace"]);
+
+  expect(first.code).toBe(0);
+
+  const [started, kept] = [first, second].map((result) =>
+    JSON.parse(result.stdout.split("\n")[1]!),
+  );
+
+  expect(started).toMatchObject({ startedServer: true });
+  expect(kept).toMatchObject({ startedServer: false, token: started.token });
+  expect(kept).not.toHaveProperty("replaced");
+}, 60_000);
+
 it("prints a failed attach between the sentinels and exits non-zero", async () => {
   await writeFile(path.join(root, "file"), "");
 
@@ -312,6 +420,40 @@ it("prints a failed attach between the sentinels and exits non-zero", async () =
     error: { message: expect.stringContaining("ENOTDIR") },
   });
 }, 30_000);
+
+it("attaches the review server when the language extensions cannot be installed", async () => {
+  const packageRoot = path.join(root, "package");
+  await mkdir(path.join(packageRoot, "vscode-server"), { recursive: true });
+  await writeFile(
+    path.join(packageRoot, "vscode-server", "product.json"),
+    JSON.stringify({ commit: "f".repeat(40) }),
+  );
+
+  const attach = await remoteAttach({
+    stateDir,
+    env: { ...env, PATH: path.dirname(process.execPath) },
+    packageRoot,
+    cli: sourceCli,
+    groups: ["go"],
+    ensureExtensions: async ({ groups }) => ({
+      failed: [{ id: "golang.go", error: `groups ${groups?.join(",")}` }],
+    }),
+  });
+
+  expect(attach).toMatchObject({
+    startedServer: true,
+    languageServer: null,
+    languageServerDetail:
+      "Could not install the language extensions: golang.go: groups go",
+    languageGroups: [{ group: "go", installed: false }],
+  });
+
+  const reviews = await fetch(`${attach.url}/reviews-api`, {
+    headers: { "x-review-token": attach.token },
+  });
+
+  expect(reviews.status).toBe(200);
+}, 60_000);
 
 it("runs the detached server in its state directory, not the caller's", async () => {
   const caller = path.join(root, "caller");

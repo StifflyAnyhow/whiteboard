@@ -114,6 +114,12 @@ export const curatedExtensions = Object.freeze([
           "317cb128e8caf2495b955ef6612d828fef809187ac445242116ad8e2e32382ff",
         size: 16313907,
       },
+      "linux-arm64": {
+        url: "https://open-vsx.org/api/rust-lang/rust-analyzer/linux-arm64/0.4.2990/file/rust-lang.rust-analyzer-0.4.2990@linux-arm64.vsix",
+        sha256:
+          "f8b326bc52f5bd9af94979fea09224697c431ef0e76f0239cb599a86df1e32b7",
+        size: 15931320,
+      },
     },
     executables: ["server/rust-analyzer"],
     stripExtensionPack: false,
@@ -192,6 +198,12 @@ export const curatedExtensions = Object.freeze([
           "78bc006683cc998e9fd1a6f2760d8cb3da63096464a217bbd192ecfb490a5516",
         size: 78144854,
       },
+      "linux-arm64": {
+        url: "https://open-vsx.org/api/muhammad-sammy/csharp/linux-arm64/2.145.21-g154a82fd27/file/muhammad-sammy.csharp-2.145.21-g154a82fd27@linux-arm64.vsix",
+        sha256:
+          "74a50cd78ca1eb45d87eb922b76e6ef3b4d843b4fc8b7b8187a7d2a9583ab532",
+        size: 75204300,
+      },
     },
     executables: [],
     stripExtensionPack: false,
@@ -230,6 +242,7 @@ export const curatedExtensions = Object.freeze([
       universal: {
         sha256:
           "232aeafb01f069824fdd92d3e628c1c442bbcfa1d3cc945ff97076340bb2b4a6",
+        size: 6826731,
       },
     },
     executables: [],
@@ -266,6 +279,12 @@ export const curatedExtensions = Object.freeze([
       "linux-x64": {
         sha256:
           "d64fc3104f07c4d47c3122a0fa9f2da3e593937c8b506b5f952b4283d877d212",
+        size: 12848973,
+      },
+      "linux-arm64": {
+        sha256:
+          "c8874795cb19bbe3bd3f3a28398a6cbb63fab1bd917b622aa8aaa31efc9f775d",
+        size: 12328752,
       },
     },
     executables: ["bundled/libs/bin/ty"],
@@ -297,6 +316,12 @@ export const curatedExtensions = Object.freeze([
       "linux-x64": {
         sha256:
           "3ed6bc6d6dc9a70cff97698d498844b756110b5c66964689dad5839845f06556",
+        size: 12225917,
+      },
+      "linux-arm64": {
+        sha256:
+          "7a6e4eea699617bb0ff318d0301a52df8d6f36c6a8f9dbc977ba695cef30425e",
+        size: 11760344,
       },
     },
     executables: ["bundled/libs/bin/ruff"],
@@ -336,6 +361,20 @@ export const supportedTargets = Object.freeze([
   "darwin-x64",
   "linux-x64",
   "win32-x64",
+]);
+
+export const remoteTargets = Object.freeze(["linux-x64", "linux-arm64"]);
+
+export const remoteExtensionIds = Object.freeze([
+  "ms-python.python",
+  "astral-sh.ty",
+  "charliermarsh.ruff",
+  "golang.go",
+  "rust-lang.rust-analyzer",
+  "swiftlang.swift-vscode",
+  "llvm-vs-code-extensions.lldb-dap",
+  "muhammad-sammy.csharp",
+  "ms-dotnettools.vscode-dotnet-runtime",
 ]);
 
 /** Group tokens accepted by DEV_REVIEW_EXTENSIONS, in display order. */
@@ -387,6 +426,18 @@ export function openVsxUrl({ namespace, name, version, target }) {
   const suffix = target ? `@${target}` : "";
 
   return `https://open-vsx.org/api/${namespace}/${name}${scoped}/${version}/file/${namespace}.${name}-${version}${suffix}.vsix`;
+}
+
+export function vsixUrlFor(extension, targetKey) {
+  return (
+    extension.targets[targetKey].url ??
+    openVsxUrl({
+      namespace: extension.namespace,
+      name: extension.name,
+      version: extension.version,
+      target: targetKey === "universal" ? undefined : targetKey,
+    })
+  );
 }
 
 /**

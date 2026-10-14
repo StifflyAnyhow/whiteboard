@@ -108,6 +108,15 @@ export async function headlessServerOwner(stateDir: string) {
   return liveLockOwner(headlessServerLockPath(resolved));
 }
 
+export async function recordedBackgroundServer(stateDir: string) {
+  const discovery = await readReviewServerDiscovery(stateDir).catch(() => null);
+  const health = discovery && (await readReviewServerHealth(discovery));
+
+  return discovery && health?.serverPid === discovery.serverPid
+    ? { discovery, health }
+    : undefined;
+}
+
 export async function stopBackgroundServer(
   discovery: Pick<ReviewServerDiscovery, "serverPid">,
   first: NodeJS.Signals = "SIGTERM",
@@ -175,13 +184,12 @@ function spawnServer(
   logPath: string,
   input: EnsureBackgroundServerInput,
 ) {
-  const [command, ...cliArgs] = input.cli ?? currentCli();
-  const env = input.env ?? process.env;
+  const { command, args, env } = cliSpawn(input.cli, input.env ?? process.env);
 
   return spawnDetached({
-    command: command!,
+    command,
     args: [
-      ...cliArgs,
+      ...args,
       "server",
       "start",
       "--state-dir",
@@ -191,9 +199,23 @@ function spawnServer(
       ...(input.args ?? []),
     ],
     cwd: stateDir,
+    env,
+    log: logPath,
+  });
+}
+
+export function cliSpawn(
+  cli: readonly string[] | undefined,
+  env: NodeJS.ProcessEnv,
+) {
+  const [command, ...args] = cli ?? currentCli();
+
+  return {
+    command: command!,
+    args,
     // Run from source, tsx finds the path aliases only through this.
     env:
-      cliArgs.at(-1)?.endsWith(".ts") && !env.TSX_TSCONFIG_PATH
+      args.at(-1)?.endsWith(".ts") && !env.TSX_TSCONFIG_PATH
         ? {
             ...env,
             TSX_TSCONFIG_PATH: path.join(
@@ -202,8 +224,7 @@ function spawnServer(
             ),
           }
         : env,
-    log: logPath,
-  });
+  };
 }
 
 function currentCli() {
