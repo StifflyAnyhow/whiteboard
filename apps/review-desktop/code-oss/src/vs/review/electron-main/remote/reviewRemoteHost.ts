@@ -336,7 +336,7 @@ export class ReviewRemoteHost {
 		const live = await probeVersion(language.local, this.timeouts.operation).then(() => true, () => false);
 		if (live) return { host: "127.0.0.1", port: language.local, connectionToken: language.connectionToken };
 		if (language === this.language) {
-			void this.attachAgain("its VS Code server did not answer", true);
+			void this.attachAgain("its language server did not answer", true);
 		}
 		return undefined;
 	}
@@ -514,18 +514,18 @@ export class ReviewRemoteHost {
 		this.language = undefined;
 		const server = attach.languageServer;
 		const unavailable = (detail: string): LanguageFeatures => ({ languageFeatures: false, languageFeaturesDetail: detail });
-		if (!server) return unavailable(attach.languageServerDetail ?? "This host has no VS Code server.");
+		if (!server) return unavailable(attach.languageServerDetail ?? "This host has no language server.");
 		const mismatch = languageCommitMismatch(this.alias, server.commit, this.options.desktopCommit);
 		if (mismatch) return unavailable(mismatch);
 		const port = await this.options.freePort();
 		if (stale()) throw unreachable("The SSH connection ended.");
 		const forward = await this.run(sshForwardArgs(this.options.session, port, server.port, env), this.timeouts.operation);
-		if (forward.code !== 0) return unavailable(`Could not forward a local port to the VS Code server on ${this.alias}: ${firstLines(forward.stderr) || `ssh exited with code ${forward.code}`}`);
+		if (forward.code !== 0) return unavailable(`Could not forward a local port to the language server on ${this.alias}: ${firstLines(forward.stderr) || `ssh exited with code ${forward.code}`}`);
 		try {
 			await probeVersion(port, this.timeouts.operation);
 		} catch (error) {
 			await this.run(sshCancelForwardArgs(this.options.session, port, server.port, env), this.timeouts.operation);
-			return unavailable(`The VS Code server on ${this.alias} did not answer through the forward: ${(error as Error).message}.`);
+			return unavailable(`The language server on ${this.alias} did not answer through the forward: ${(error as Error).message}.`);
 		}
 		this.language = { local: port, remote: server.port, connectionToken: server.connectionToken };
 		return { languageFeatures: true };
