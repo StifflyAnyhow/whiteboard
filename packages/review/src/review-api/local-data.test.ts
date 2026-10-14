@@ -1108,7 +1108,7 @@ it("gives a remote caller Ask answers with checkout-relative mentions", async ()
   threads.close(threadId);
 });
 
-it("answers a remote caller's navigator with the host paths a local caller gets", async () => {
+it("answers a remote caller's navigator with the host paths a local caller gets, and its server id", async () => {
   const { reviewId } = await local.store.execute(
     command({
       type: "create",
@@ -1135,8 +1135,9 @@ it("answers a remote caller's navigator with the host paths a local caller gets"
 
   const remote = { [REVIEW_CLIENT_HEADER]: REVIEW_CLIENT_REMOTE };
   const file = { version: "0", side: "base", file: source.file };
-  const answer = await open(file, remote);
+  const { serverId, ...answer } = await open(file, remote);
   const { folders } = JSON.parse(readFileSync(answer.workspacePath, "utf8"));
+  expect(serverId).toBe(local.store.serverId());
   expect(answer).toEqual(await open(file));
   expect(answer.filePath).toBe(path.join(folders[0].path, source.file));
   expect(readFileSync(answer.filePath, "utf8")).toContain("value = 1");
@@ -1145,6 +1146,7 @@ it("answers a remote caller's navigator with the host paths a local caller gets"
   expect(await open(added, remote)).toEqual({
     workspacePath: answer.workspacePath,
     emptySide: true,
+    serverId,
   });
   expect((await open(added)).filePath).toEqual(expect.any(String));
 });
