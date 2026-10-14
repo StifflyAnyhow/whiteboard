@@ -303,7 +303,7 @@ async function stagePackageData(stage, stdio) {
   await stageReviewDocs(stage);
 }
 
-function packTar(file, stageRoot) {
+function packTar(file, stageRoot, compression) {
   const gnu = execFileSync("tar", ["--version"], { encoding: "utf8" }).includes(
     "GNU",
   );
@@ -323,7 +323,13 @@ function packTar(file, stageRoot) {
   execFileSync(
     "tar",
     ["-cJf", file, ...flags, "-C", stageRoot, "whiteboard-remote"],
-    { env: { ...process.env, XZ_OPT: "-6 -T0", COPYFILE_DISABLE: "1" } },
+    {
+      env: {
+        ...process.env,
+        XZ_OPT: `-${compression} -T0`,
+        COPYFILE_DISABLE: "1",
+      },
+    },
   );
 }
 
@@ -333,6 +339,7 @@ export async function buildRemoteTarball({
   version,
   commit,
   cacheDir = DEFAULT_CACHE,
+  compression = 6,
   stdio = "inherit",
 }) {
   if (!REMOTE_TARGETS.includes(target))
@@ -389,7 +396,7 @@ export async function buildRemoteTarball({
     );
 
     await rm(file, { force: true });
-    packTar(file, stageRoot);
+    packTar(file, stageRoot, compression);
 
     const { size } = await stat(file);
 
@@ -458,6 +465,7 @@ export async function buildDevRemoteTarball({
     commit: execFileSync("git", ["-C", monorepoRoot, "rev-parse", "HEAD"], {
       encoding: "utf8",
     }).trim(),
+    compression: 0,
     stdio,
   });
 
