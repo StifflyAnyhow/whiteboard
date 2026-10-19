@@ -1,8 +1,9 @@
 import { Button, IconButton } from "@canvas/ui/button";
+import { Checkbox } from "@canvas/ui/checkbox";
 import { iconStyles } from "@canvas/ui/icon-styles";
 import { BugIcon, CloseIcon } from "@canvas/ui/icons";
 import { surfaceStyles } from "@canvas/ui/surface";
-import { fieldStyles } from "@canvas/ui/text-field";
+import { TextArea } from "@canvas/ui/text-field";
 import {
   type ReviewBugReportRequest,
   parseReviewBugReportResponse,
@@ -258,12 +259,8 @@ export function BugReportControl({
               </h2>
               <label {...stylex.props(styles.description)}>
                 <span>What happened? (optional)</span>
-                <textarea
-                  {...stylex.props(
-                    fieldStyles.box,
-                    fieldStyles.multiline,
-                    styles.textarea,
-                  )}
+                <TextArea
+                  xstyle={styles.textarea}
                   autoFocus
                   rows={7}
                   value={description}
@@ -285,8 +282,7 @@ export function BugReportControl({
                   Include diagnostic attachments
                 </legend>
                 <label {...stylex.props(styles.small, styles.option)}>
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={includeContext}
                     onChange={(event) =>
                       setIncludeContext(event.target.checked)
@@ -295,8 +291,7 @@ export function BugReportControl({
                   Session
                 </label>
                 <label {...stylex.props(styles.small, styles.option)}>
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={includeDiff}
                     onChange={(event) => setIncludeDiff(event.target.checked)}
                   />
