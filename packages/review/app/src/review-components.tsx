@@ -1,6 +1,7 @@
 import { documentType } from "@canvas/document-type.stylex";
 import { fontSize, fontWeight } from "@canvas/scale.stylex";
-import { IconButton } from "@canvas/ui/button";
+import { IconButton, buttonStyles } from "@canvas/ui/button";
+import { iconStyles } from "@canvas/ui/icon-styles";
 import {
   OverlayScrollbar,
   overlayScrollbarStyles,
@@ -47,7 +48,6 @@ import { useMarkThreadViewed } from "./ask-viewed";
 import { AskSlot, AskWindow } from "./ask-window";
 import { AuthoredCodeSurface } from "./authored-code-surface";
 import { SourceCodePeek } from "./CodePeek";
-import { controlStyles } from "./controls-styles";
 import { documentStyles } from "./document-styles";
 import { drawStyles } from "./draw-styles";
 import { findWhitespaceNormalizedSpan } from "./highlighted-text";
@@ -199,7 +199,7 @@ function ReviewPanelFrame({
       style={panelStyle}
     >
       <div
-        {...stylex.props(shellStyles.sheetResizer)}
+        {...stylex.props(buttonStyles.reset, shellStyles.sheetResizer)}
         {...sheet.separatorProps}
       />
       <header
@@ -220,7 +220,11 @@ function ReviewPanelFrame({
           >
             {label}
           </span>
-          {title && <h2 {...stylex.props(panelStyles.heading)}>{title}</h2>}
+          {title && (
+            <h2 {...stylex.props(textStyles.truncate, panelStyles.heading)}>
+              {title}
+            </h2>
+          )}
           {titleAccessory}
         </div>
         <div {...stylex.props(panelStyles.actions)}>
@@ -233,7 +237,7 @@ function ReviewPanelFrame({
             aria-label={closeLabel}
             data-tour-target={tour ? "tour-close" : undefined}
           >
-            <CloseIcon xstyle={controlStyles.inertIcon} />
+            <CloseIcon xstyle={iconStyles.inert} />
           </IconButton>
         </div>
       </header>
@@ -688,10 +692,7 @@ function OpenAsk({ askKey }: { askKey: number }) {
                     onClick={() => store.getState().popOutAsk(askKey)}
                   >
                     <PopOutIcon
-                      xstyle={[
-                        controlStyles.inertIcon,
-                        controlStyles.chromeIcon,
-                      ]}
+                      xstyle={[iconStyles.inert, iconStyles.chrome]}
                     />
                   </IconButton>
                 </>
@@ -820,7 +821,7 @@ function TraceQuotePeekPanel({
         closeLabel="Close side peek"
       >
         <div {...stylex.props(panelStyles.peekBody)}>
-          <p {...stylex.props(traceStyles.note, traceStyles.noteError)}>
+          <p {...stylex.props(traceStyles.note, textStyles.error)}>
             {data.error}
           </p>
         </div>
@@ -939,7 +940,7 @@ function CodeReviewPeekPanel({
               }}
               aria-label={`Show ${anchor.title} in software map`}
             >
-              <MapPinIcon xstyle={controlStyles.inertIcon} />
+              <MapPinIcon xstyle={iconStyles.inert} />
             </IconButton>
           </div>
         ) : null}
@@ -1262,7 +1263,7 @@ export function GuidedTourPanel({
                 <span>End of tour</span>
                 <button
                   type="button"
-                  {...stylex.props(tourStyles.endCapButton)}
+                  {...stylex.props(buttonStyles.reset, tourStyles.endCapButton)}
                   onClick={() => stepTo(0)}
                 >
                   ↑ Back to step 1
@@ -1330,7 +1331,7 @@ function GuidedTourStopMain({
                 onClose();
               }}
             >
-              <MapPinIcon xstyle={controlStyles.inertIcon} />
+              <MapPinIcon xstyle={iconStyles.inert} />
             </IconButton>
           </div>
         ) : null}

@@ -1,4 +1,6 @@
-import { Button, IconButton } from "@canvas/ui/button";
+import { Button, IconButton, buttonStyles } from "@canvas/ui/button";
+import { focusStyles } from "@canvas/ui/focus";
+import { iconStyles } from "@canvas/ui/icon-styles";
 import {
   OverlayScrollbar,
   overlayScrollbarStyles,
@@ -43,7 +45,6 @@ import { BugReportControl } from "./bug-report-dialog";
 import { CommitPicker } from "./commit-picker";
 import { LanguageServerChip } from "./connection-chip";
 import { ContentsRail } from "./contents-rail";
-import { controlStyles } from "./controls-styles";
 import {
   ReviewDebugSettingsProvider,
   type ReviewNodeTint,
@@ -913,7 +914,7 @@ function ReviewLayoutContent({
                 data-page-bar-fold="chat"
                 onClick={joinDiscord}
               >
-                <DiscordIcon xstyle={controlStyles.chromeIcon} />
+                <DiscordIcon xstyle={iconStyles.chrome} />
               </IconButton>
             )}
             <BugReportControl folded={fold >= 2} handle={bugReport} />
@@ -1112,6 +1113,7 @@ function ReviewLayoutContent({
       {rightPanelOpen && (
         <div
           {...stylex.props(
+            buttonStyles.reset,
             shellStyles.resizer,
             shellStyles.peekResizer,
             shellStyles.resizerGrabPanel,

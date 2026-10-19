@@ -112,15 +112,12 @@ export const panelStyles = stylex.create({
     fontFamily: tokens.chromeFont,
   },
   heading: {
-    overflow: "hidden",
     margin: 0,
     color: tokens.ink,
     fontFamily: tokens.chromeFont,
     fontSize: fontSize.ui,
     fontWeight: fontWeight.semibold,
     lineHeight: 1.3,
-    whiteSpace: "nowrap",
-    textOverflow: "ellipsis",
   },
   close: {
     flex: "0 0 auto",
@@ -269,10 +266,6 @@ export const tourStyles = stylex.create({
   },
   endCapButton: {
     padding: 0,
-    borderWidth: 0,
-    borderStyle: "none",
-    borderColor: "currentcolor",
-    backgroundColor: tokens.transparent,
     boxShadow: "none",
     color: tokens.accent,
     font: "inherit",

@@ -1,3 +1,7 @@
+import { buttonStyles } from "@canvas/ui/button";
+import { focusStyles } from "@canvas/ui/focus";
+import { iconStyles } from "@canvas/ui/icon-styles";
+import { textStyles } from "@canvas/ui/text";
 import type {
   ReviewHostStatus,
   ReviewRemoteHostActions,
@@ -61,7 +65,6 @@ import { useLatest, useThread } from "./ask-thread-stream";
 import { AskAgentTurn, AskWorking, turns } from "./ask-turn";
 import { canvasQueryKeys } from "./canvas-query";
 import { useHostActionButton } from "./connection-chip";
-import { controlStyles } from "./controls-styles";
 import { formatRelativeTime } from "./format";
 import { useReviewSession } from "./host/review-session";
 import { ArrowUpIcon, ImageIcon, LockIcon } from "./icons";
@@ -597,7 +600,7 @@ export function AskPanelContent({
       current={access}
       disabled={settingsDisabled}
       quiet
-      icon={readOnly ? <LockIcon xstyle={controlStyles.inlineIcon} /> : null}
+      icon={readOnly ? <LockIcon xstyle={iconStyles.inline} /> : null}
       onPick={(value) => {
         const parsed = askPermissionsSchema.safeParse(value);
 
@@ -607,11 +610,11 @@ export function AskPanelContent({
   ) : (
     <TooltipLabel
       tooltip={modeTitle}
-      xstyle={[styles.mode, styles.settingsLabel]}
+      xstyle={[textStyles.truncate, styles.mode, styles.settingsLabel]}
     >
       {readOnly ? (
         <>
-          <LockIcon xstyle={controlStyles.inlineIcon} />
+          <LockIcon xstyle={iconStyles.inline} />
           Read-only
         </>
       ) : (
@@ -714,14 +717,21 @@ export function AskPanelContent({
                 onRetry={retry}
               />
             ) : error ? (
-              <p {...stylex.props(askPanelStyles.error)} role="alert">
+              <p
+                {...stylex.props(textStyles.error, askPanelStyles.error)}
+                role="alert"
+              >
                 {error}
                 {errorAction ? (
                   <>
                     {" "}
                     <button
                       type="button"
-                      {...stylex.props(askPanelStyles.errorAction)}
+                      {...stylex.props(
+                        focusStyles.ring,
+                        buttonStyles.reset,
+                        askPanelStyles.errorAction,
+                      )}
                       onClick={errorAction.run}
                     >
                       {errorAction.label}
@@ -834,7 +844,10 @@ export function AskReadOnlyThread({
         <AskSelectionQuote selection={selection} />
         {thread ? <AskTurns thread={thread} onDecide={() => {}} /> : null}
         {error ? (
-          <p {...stylex.props(askPanelStyles.error)} role="alert">
+          <p
+            {...stylex.props(textStyles.error, askPanelStyles.error)}
+            role="alert"
+          >
             {error.message}
           </p>
         ) : null}
@@ -876,7 +889,7 @@ function ToLatestButton({ onClick }: { onClick: () => void }): ReactElement {
       aria-label={label}
       onClick={onClick}
     >
-      <ArrowUpIcon xstyle={[controlStyles.chromeIcon, styles.toLatestIcon]} />
+      <ArrowUpIcon xstyle={[iconStyles.chrome, styles.toLatestIcon]} />
     </IconButton>
   );
 }
@@ -941,7 +954,7 @@ function AskImageChip({ name }: { name: string }): ReactElement {
       variant="pill"
       xstyle={styles.attachment}
     >
-      <ImageIcon xstyle={controlStyles.inlineIcon} />
+      <ImageIcon xstyle={iconStyles.inline} />
       {name}
     </Chip>
   );
@@ -1007,13 +1020,10 @@ const styles = stylex.create({
     alignItems: "center",
     gap: "6px",
     minWidth: 0,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
     color: tokens.inkMuted,
     fontFamily: tokens.chromeFont,
     fontSize: fontSize.small,
     lineHeight: "14px",
-    whiteSpace: "nowrap",
   },
   // Holds the thread and, over its foot, the way back to the newest.
   threadFrame: {

@@ -1,4 +1,6 @@
 import { fontSize, fontWeight, radius } from "@canvas/scale.stylex";
+import { buttonStyles } from "@canvas/ui/button";
+import { focusStyles } from "@canvas/ui/focus";
 import { textStyles } from "@canvas/ui/text";
 import type {
   ReviewCommitScope,
@@ -406,6 +408,7 @@ export function ReviewDiffView({
           <div
             {...cabinetsResize.separatorProps}
             {...stylex.props(
+              buttonStyles.reset,
               shellStyles.sheetResizer,
               styles.cabinetsResizer,
               cabinetsResize.isResizing && styles.resizing,
@@ -416,7 +419,7 @@ export function ReviewDiffView({
               {...stylex.props(
                 textStyles.eyebrow,
                 styles.heading,
-                styles.filesHeading,
+                textStyles.truncate,
               )}
             >
               Files <span aria-hidden="true">·</span>{" "}
@@ -433,6 +436,7 @@ export function ReviewDiffView({
       <div
         {...sidebarResize.separatorProps}
         {...stylex.props(
+          buttonStyles.reset,
           shellStyles.resizer,
           styles.sidebarResizer,
           sidebarResize.isResizing && styles.resizing,
@@ -738,6 +742,8 @@ function RailLens({
   return (
     <button
       {...stylex.props(
+        focusStyles.ringInset,
+        buttonStyles.reset,
         styles.railLens,
         empty && lensRowStyles.toggleEmpty,
         selected && styles.railLensActive,
@@ -780,7 +786,11 @@ function RailButton({
   return (
     <button
       ref={tooltip}
-      {...stylex.props(styles.railButton)}
+      {...stylex.props(
+        focusStyles.ringInset,
+        buttonStyles.reset,
+        styles.railButton,
+      )}
       aria-label={label}
       onClick={onClick}
     >
@@ -891,16 +901,11 @@ const styles = stylex.create({
     flexShrink: 0,
     width: "28px",
     height: "28px",
-    borderWidth: 0,
-    borderStyle: "none",
-    borderColor: "currentcolor",
     borderRadius: radius.control,
     padding: 0,
     color: tokens.inkMuted,
     cursor: "pointer",
     backgroundColor: { default: tokens.transparent, ":hover": tokens.well },
-    outline: { default: null, ":focus-visible": `1px solid ${tokens.accent}` },
-    outlineOffset: { default: null, ":focus-visible": "-2px" },
   },
   // 5ch is five letters in Geist Mono.
   railLens: {
@@ -909,9 +914,6 @@ const styles = stylex.create({
     width: "5ch",
     height: "24px",
     padding: "0 5px",
-    borderWidth: 0,
-    borderStyle: "none",
-    borderColor: "currentcolor",
     borderRadius: radius.pill,
     font: "inherit",
     color: "inherit",
@@ -919,8 +921,6 @@ const styles = stylex.create({
     whiteSpace: "nowrap",
     cursor: "pointer",
     backgroundColor: { default: tokens.transparent, ":hover": tokens.well },
-    outline: { default: null, ":focus-visible": `1px solid ${tokens.accent}` },
-    outlineOffset: { default: null, ":focus-visible": "-2px" },
   },
   railLensActive: {
     color: tokens.ink,
@@ -967,11 +967,6 @@ const styles = stylex.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingBottom: "2px",
-  },
-  filesHeading: {
-    whiteSpace: "nowrap",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
   },
   hint: {
     padding: "0 14px 6px 16px",
@@ -1055,6 +1050,5 @@ const styles = stylex.create({
   },
   error: {
     padding: "8px 12px",
-    color: tokens.changeRemoved,
   },
 });

@@ -1,3 +1,6 @@
+import { buttonStyles } from "@canvas/ui/button";
+import { focusStyles } from "@canvas/ui/focus";
+import { iconStyles } from "@canvas/ui/icon-styles";
 import * as stylex from "@stylexjs/stylex";
 import { type ReactElement, useEffect } from "react";
 
@@ -7,7 +10,6 @@ import { AskDeleteButton } from "./ask-delete";
 import { useShowThreads } from "./ask-dock";
 import { useAskHistory } from "./ask-history";
 import { askPanelStyles } from "./ask-styles";
-import { controlStyles } from "./controls-styles";
 import { formatRelativeTime } from "./format";
 import { useReviewSession } from "./host/review-session";
 import { ChatIcon, HistoryIcon } from "./icons";
@@ -84,9 +86,7 @@ export function AskHistoryButton({ view }: { view: AskView }): ReactElement {
       disabled={!(showThreads ?? openHistory) || allShown}
       onClick={showThreads ?? openHistory}
     >
-      <HistoryIcon
-        xstyle={[controlStyles.inertIcon, controlStyles.chromeIcon]}
-      />
+      <HistoryIcon xstyle={[iconStyles.inert, iconStyles.chrome]} />
     </IconButton>
   );
 }
@@ -160,13 +160,21 @@ export function AskHistoryList({
         </div>
         {passage ? (
           <figure {...stylex.props(askPanelStyles.selection)}>
-            <blockquote {...stylex.props(askPanelStyles.selectionQuote)}>
+            <blockquote
+              {...stylex.props(
+                textStyles.clamp2,
+                askPanelStyles.selectionQuote,
+              )}
+            >
               {passage.quote}
             </blockquote>
           </figure>
         ) : null}
         {error ? (
-          <p {...stylex.props(askPanelStyles.error)} role="alert">
+          <p
+            {...stylex.props(textStyles.error, askPanelStyles.error)}
+            role="alert"
+          >
             {error}
           </p>
         ) : null}
@@ -228,7 +236,11 @@ export function AskHistoryList({
                 >
                   <button
                     type="button"
-                    {...stylex.props(styles.historyOpen)}
+                    {...stylex.props(
+                      focusStyles.ringInset,
+                      buttonStyles.reset,
+                      styles.historyOpen,
+                    )}
                     onPointerEnter={() => {
                       history?.preview(entry.id);
                       history?.reveal(entry);
@@ -258,7 +270,12 @@ export function AskHistoryList({
                       {logos[entry.agent]({})}
                     </span>
                     <span {...stylex.props(styles.historyText)}>
-                      <span {...stylex.props(styles.historyTitle)}>
+                      <span
+                        {...stylex.props(
+                          textStyles.clamp2,
+                          styles.historyTitle,
+                        )}
+                      >
                         {title}
                       </span>
                       {source ? (
@@ -268,7 +285,12 @@ export function AskHistoryList({
                       ) : null}
                       {/* One passage's list quotes it once, above. */}
                       {!passage && target.kind === "text" ? (
-                        <span {...stylex.props(styles.historyQuote)}>
+                        <span
+                          {...stylex.props(
+                            textStyles.truncate,
+                            styles.historyQuote,
+                          )}
+                        >
                           {target.quote}
                         </span>
                       ) : null}
@@ -297,6 +319,8 @@ export function AskHistoryList({
           <button
             type="button"
             {...stylex.props(
+              focusStyles.ring,
+              buttonStyles.reset,
               askPanelStyles.errorAction,
               styles.allConversations,
             )}
@@ -345,9 +369,6 @@ const styles = stylex.create({
     gap: "12px",
     minWidth: 0,
     padding: "12px 40px 12px 14px",
-    borderWidth: 0,
-    borderStyle: "none",
-    borderColor: "currentcolor",
     backgroundColor: {
       default: tokens.transparent,
       ":hover": tokens.chromeHoverBg,
@@ -356,8 +377,6 @@ const styles = stylex.create({
     color: tokens.ink,
     textAlign: "left",
     cursor: "pointer",
-    outline: { default: null, ":focus-visible": `1px solid ${tokens.accent}` },
-    outlineOffset: { default: null, ":focus-visible": "-1px" },
   },
   historyLogo: {
     display: "flex",
@@ -372,23 +391,16 @@ const styles = stylex.create({
     minWidth: 0,
   },
   historyTitle: {
-    display: "-webkit-box",
-    overflow: "hidden",
     fontFamily: tokens.fontSerif,
     fontSize: fontSize.reading,
     lineHeight: "22px",
-    WebkitBoxOrient: "vertical",
-    WebkitLineClamp: 2,
   },
   historyQuote: {
-    overflow: "hidden",
     color: tokens.inkMuted,
     fontFamily: tokens.fontSerif,
     fontSize: fontSize.ui,
     fontStyle: "italic",
     lineHeight: "20px",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
   },
   historyMeta: {
     color: tokens.inkFaint,
