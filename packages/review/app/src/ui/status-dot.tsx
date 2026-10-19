@@ -1,4 +1,4 @@
-import { radius } from "@canvas/scale.stylex";
+import { radius, space } from "@canvas/scale.stylex";
 import { tokens } from "@canvas/tokens.stylex";
 import * as stylex from "@stylexjs/stylex";
 import type { ComponentProps, ReactElement } from "react";
@@ -39,8 +39,8 @@ export function StatusDot({
 const styles = stylex.create({
   dot: {
     position: "absolute",
-    top: "-3px",
-    right: "-4px",
+    top: `-${space.s4}`,
+    right: `-${space.s4}`,
     width: "8px",
     height: "8px",
     borderWidth: "1.5px",
@@ -49,7 +49,7 @@ const styles = stylex.create({
     borderRadius: radius.round,
   },
   small: {
-    right: "-3px",
+    right: `-${space.s4}`,
     width: "6px",
     height: "6px",
   },

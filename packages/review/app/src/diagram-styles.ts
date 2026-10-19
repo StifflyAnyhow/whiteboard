@@ -1,10 +1,19 @@
-import { fontSize, fontWeight, radius } from "@canvas/scale.stylex";
+import {
+  fontSize,
+  fontWeight,
+  leading,
+  radius,
+  space,
+} from "@canvas/scale.stylex";
 import * as stylex from "@stylexjs/stylex";
 
 import { tokens } from "./tokens.stylex";
 
 // The header every diagram figure shares: a kind badge, the title and a quiet
 // count, then its 24px controls (the tour Button, the use-case select).
+// Clears the select's chevron.
+const CHEVRON_CLEARANCE = "26px";
+
 export const diagramStyles = stylex.create({
   handle: {
     width: "1px",
@@ -24,11 +33,11 @@ export const diagramStyles = stylex.create({
     zIndex: 6,
     display: "flex",
     alignItems: "center",
-    gap: "10px",
+    gap: space.s10,
     minWidth: 0,
     minHeight: "36px",
     paddingBlock: 0,
-    paddingRight: "12px",
+    paddingRight: space.s12,
     paddingLeft: "calc(14px + var(--review-fullscreen-inset, 0px))",
     borderBottomWidth: "1px",
     borderBottomStyle: "solid",
@@ -42,7 +51,7 @@ export const diagramStyles = stylex.create({
     display: "inline-flex",
     flex: "1 1 auto",
     alignItems: "center",
-    gap: "10px",
+    gap: space.s10,
     minWidth: 0,
   },
   title: {
@@ -51,7 +60,7 @@ export const diagramStyles = stylex.create({
     fontSize: fontSize.body,
     fontStyle: "normal",
     fontWeight: fontWeight.semibold,
-    lineHeight: "18px",
+    lineHeight: leading.px18,
   },
   // A quiet count ("5 stops", "4 nodes"), not a chip.
   meta: {
@@ -79,7 +88,7 @@ export const diagramStyles = stylex.create({
   control: {
     flex: "0 0 auto",
     height: "24px",
-    padding: "0 10px",
+    padding: `0 ${space.s10}`,
     borderWidth: "1px",
     borderStyle: "solid",
     borderColor: { default: tokens.ruleSoft, ":focus-visible": tokens.accent },
@@ -87,14 +96,14 @@ export const diagramStyles = stylex.create({
     backgroundColor: { default: tokens.surface, ":hover": tokens.well },
     color: tokens.ink,
     font: `${fontWeight.medium} ${fontSize.small} ${tokens.chromeFont}`,
-    lineHeight: "22px",
+    lineHeight: leading.px22,
     cursor: "pointer",
     outline: { default: null, ":focus-visible": "none" },
   },
   select: {
     width: "100%",
     minWidth: 0,
-    paddingRight: "26px",
+    paddingRight: CHEVRON_CLEARANCE,
     overflow: "hidden",
     appearance: "none",
     backgroundImage: tokens.chevronDown,
