@@ -24,7 +24,7 @@ import type { EditorInput } from "../../../../workbench/common/editor/editorInpu
 import { IEditorService } from "../../../../workbench/services/editor/common/editorService.js";
 import { IWorkbenchLayoutService, Parts } from "../../../../workbench/services/layout/browser/layoutService.js";
 import { REVIEW_CHROME_HEIGHT } from "../../../common/reviewChrome.js";
-import { REVIEW_SIDEBAR_MINIMUM_WIDTH, TAB_COUNT_DIGITS, measuredOnce, sidebarMinimumWidth, sidebarTabWidth, tabsRowWidth } from "./reviewSidebarWidth.js";
+import { REVIEW_SIDEBAR_MINIMUM_WIDTH, TAB_COUNT_DIGITS, measuredOnce, sidebarMinimumWidth, tabsRowWidth } from "./reviewSidebarWidth.js";
 import type {
 	ReviewAskState,
 	ReviewProjectThreads,
@@ -89,11 +89,17 @@ type ReviewSidebarIcon = readonly { tag: "path" | "rect"; attrs: Record<string, 
 /** The tab icons: 16px strokes. */
 export const REVIEW_SIDEBAR_TAB_ICONS: Record<ReviewSidebarPaneId, ReviewSidebarIcon> = {
 	whiteboard: [
-		{ tag: "rect", attrs: { x: "2.5", y: "5", width: "9", height: "8", rx: "1.5" } },
-		{ tag: "path", attrs: { d: "M5 5 V4 Q5 2.5 6.5 2.5 H12 Q13.5 2.5 13.5 4 V9.5 Q13.5 11 12 11 H11.5" } },
+		{ tag: "rect", attrs: { x: "2", y: "2.667", width: "12", height: "10", rx: "1.333" } },
+		{ tag: "path", attrs: { d: "M4.667 8.333 c0.833 -1.467 1.833 -1.467 2.667 0 s1.833 1.467 2.667 0 1 -0.933 1.333 -0.667" } },
 	],
-	threads: [{ tag: "path", attrs: { d: "M4 3 H12 Q13.5 3 13.5 4.5 V9.5 Q13.5 11 12 11 H7.5 L4.5 13.5 V11 H4 Q2.5 11 2.5 9.5 V4.5 Q2.5 3 4 3 Z" } }],
-	diff: [{ tag: "path", attrs: { d: "M8 1.75 V10.25 M3.75 6 H12.25 M3.75 13 H12.25" } }],
+	threads: [
+		{ tag: "path", attrs: { d: "M12 4.667 A1.333 1.333 0 0 0 10.667 3.333 H3.333 A1.333 1.333 0 0 0 2 4.667 V9.333 A1.333 1.333 0 0 0 3.333 10.667 H3.667 A0.333 0.333 0 0 1 4 11 V12.333 A0.167 0.167 0 0 0 4.267 12.467 L4.333 12.417" } },
+		{ tag: "path", attrs: { d: "M9.759 12 H7.333 A1.333 1.333 0 0 1 6 10.667 V8 A1.333 1.333 0 0 1 7.333 6.667 H12.667 A1.333 1.333 0 0 1 14 8 V10.667 A1.333 1.333 0 0 1 12.667 12 H12.333 A0.333 0.333 0 0 0 12 12.333 V13.31 A0.167 0.167 0 0 1 11.727 13.438 L10.186 12.155 A0.667 0.667 0 0 0 9.759 12" } },
+	],
+	diff: [
+		{ tag: "path", attrs: { d: "M4 14.667 A1.333 1.333 0 0 1 2.667 13.333 V2.667 A1.333 1.333 0 0 1 4 1.333 H9.333 A1.6 1.6 0 0 1 10.469 1.804 L12.862 4.196 A1.6 1.6 0 0 1 13.333 5.333 V13.333 A1.333 1.333 0 0 1 12 14.667 Z" } },
+		{ tag: "path", attrs: { d: "M6 6.667 H10 M8 8.667 V4.667 M6 11.333 H10" } },
+	],
 };
 
 /** The tabs in order; `noun` names what a tab counts, in the rail's
@@ -253,7 +259,9 @@ export class ReviewSidebarPart extends Part {
 	 * choice follows the sidebar's width alone and can't flip back on
 	 * itself. */
 	private foldTabs(width: number): void {
-		const folded = width < this.tabsRow.get().labelled;
+		const tabs = this.tabsRow.get();
+		if (!tabs) return;
+		const folded = width < tabs.labelled;
 		if (this.tabRow?.classList.contains("folded") === folded) return;
 		this.tabRow?.classList.toggle("folded", folded);
 		this.describeTabs();
@@ -277,7 +285,7 @@ export class ReviewSidebarPart extends Part {
 	private fitControls(): void {
 		const controls = this.layoutService.mainContainer.querySelector(".part.titlebar .titlebar-left");
 		if (!controls || !this.element) return;
-		const width = sidebarMinimumWidth(controls.getBoundingClientRect().right, this.element.getBoundingClientRect().left, this.tabsRow.get().folded);
+		const width = sidebarMinimumWidth(controls.getBoundingClientRect().right, this.element.getBoundingClientRect().left, this.tabsRow.get()?.folded);
 		if (width === this.fitWidth) return;
 		this.fitWidth = width;
 		this._onDidChange.fire(undefined);
@@ -287,14 +295,13 @@ export class ReviewSidebarPart extends Part {
 	 * change. */
 	private readonly tabsRow = measuredOnce(() => this.tabsWidth());
 
-	/** Sizes every labelled tab alike, hidden ones included, and returns
-	 * the row's width with all of them labelled, and with all of them folded
-	 * to an icon and count. Each is measured in a hidden copy of the row,
-	 * with its count at full width. */
-	private tabsWidth(): { labelled: number; folded: number } {
+	/** The row's width with every tab labelled, and with every tab folded to
+	 * an icon and count, each folded tab as wide as the widest. Each is
+	 * measured in a hidden copy of the row, with its count at full width. */
+	private tabsWidth(): { labelled: number; folded: number } | undefined {
 		const row = this.tabRow;
-		const first = this.panes[0]?.tab;
-		if (!row || !first) return { labelled: 0, folded: 0 };
+		// A hidden sidebar has nothing to measure yet.
+		if (!row?.offsetWidth || !this.panes.length) return undefined;
 		const probe = $(".review-sidebar-tabs-probe", { "aria-hidden": "true" });
 		const foldedProbe = $(".review-sidebar-tabs-probe.folded", { "aria-hidden": "true" });
 		const tab = (noun: string | undefined, title?: string) => {
@@ -305,23 +312,20 @@ export class ReviewSidebarPart extends Part {
 			icon.append(svgIcon(REVIEW_SIDEBAR_TAB_ICONS.whiteboard, 16));
 			return $("span.review-sidebar-tab", undefined, icon, label);
 		};
-		const labels = REVIEW_SIDEBAR_PANES.map(({ title, noun }) => {
-			const labelled = tab(noun, title);
-			probe.append(labelled);
+		for (const { title, noun } of REVIEW_SIDEBAR_PANES) {
+			probe.append(tab(noun, title));
 			foldedProbe.append(tab(noun));
-			return labelled.querySelector(".review-sidebar-tab-label")!;
-		});
+		}
 		row.append(probe, foldedProbe);
-		const widths = labels.map((label) => label.getBoundingClientRect().width);
-		const foldedWidth = Math.ceil(Math.max(0, ...[...foldedProbe.children].map((child) => child.getBoundingClientRect().width)));
+		const widths = (tabs: HTMLElement) => [...tabs.children].map((child) => Math.ceil(child.getBoundingClientRect().width));
+		const labelled = widths(probe);
+		const folded = widths(foldedProbe);
 		probe.remove();
 		foldedProbe.remove();
-		const width = sidebarTabWidth(widths, parseFloat(getComputedStyle(first).paddingLeft) || 0);
-		row.style.setProperty("--review-sidebar-tab-width", `${width}px`);
 		const style = getComputedStyle(row);
 		const gap = parseFloat(style.columnGap) || 0;
-		const padding = parseFloat(style.paddingLeft) || 0;
-		return { labelled: tabsRowWidth(width, gap, padding), folded: tabsRowWidth(foldedWidth, gap, padding) };
+		const inset = [style.marginLeft, style.borderLeftWidth, style.paddingLeft].reduce((sum, value) => sum + (parseFloat(value) || 0), 0);
+		return { labelled: tabsRowWidth(labelled, gap, inset), folded: tabsRowWidth(folded.map(() => Math.max(...folded)), gap, inset) };
 	}
 
 	override create(parent: HTMLElement): void {
