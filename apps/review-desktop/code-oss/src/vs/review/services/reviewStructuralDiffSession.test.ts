@@ -89,7 +89,7 @@ test('per-file failures and run abortion remain observable after the stream fini
 			yield { ...complete, aborted: { code: 'cancel', message: 'stopped' } } as StructuralEvent;
 		}
 	});
-	try { await session.start(); assert.equal(session.getFileResult('a.ts')?.error, 'bad file'); assert.match(session.error!, /stopped/); }
+	try { await session.start(); assert.equal(session.getFileResult('a.ts')?.error, 'bad file'); assert.match(session.error!, /stopped/); assert.deepEqual(session.failure(), { reason: 'aborted', files: 1 }); }
 	finally { session.dispose(); }
 });
 
@@ -168,4 +168,13 @@ test('structural editor models retain diffr bytes across a live file save', asyn
 			{ ignoreTrimWhitespace: false, maxComputationTimeMs: 0, computeMoves: false }, CancellationToken.None));
 		await task;
 	} finally { release(); lifetime.dispose(); session.dispose(); await task; }
+});
+
+test('a file diffr could not diff resolves to the run\'s error', async () => {
+	const session = new StructuralDiffSession({ async *streamComparison() { yield start; throw new Error('diffr exited with 1: boom'); } });
+	try {
+		const pending = session.fileResult('a.ts');
+		await session.start();
+		assert.deepEqual(await pending, { error: 'diffr exited with 1: boom' });
+	} finally { session.dispose(); }
 });

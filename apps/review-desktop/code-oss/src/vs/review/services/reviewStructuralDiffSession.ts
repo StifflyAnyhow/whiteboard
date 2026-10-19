@@ -13,6 +13,8 @@ export interface StructuralFileResult {
 	hidden?: string;
 }
 
+export type StructuralFailureReason = "missing_binary" | "process_exit" | "stream_ended" | "aborted" | "file_error" | "other";
+
 export interface StructuralSessionChange {
 	/** Files whose diff or fold state changed. */
 	readonly files: ReadonlySet<string>;
@@ -45,15 +47,15 @@ export class StructuralDiffSession extends Disposable {
 		const current = this.results.get(path);
 		if (current) return Promise.resolve(current);
 		if (this.disposed) return Promise.reject(new CancellationError());
-		if (this.finished) return Promise.reject(new Error(this.error ?? `diffr did not supply a result for ${path}.`));
+		if (this.finished) return Promise.resolve(this.missingResult());
 		return new Promise((resolve, reject) => {
 			const finish = () => {
 				const result = this.results.get(path);
 				if (!result && !this.finished && !this.disposed) return;
 				listener.dispose();
 				this.abort.signal.removeEventListener("abort", cancel);
-				if (result) resolve(result);
-				else reject(this.disposed ? new CancellationError() : new Error(this.error ?? `diffr did not supply a result for ${path}.`));
+				if (this.disposed) reject(new CancellationError());
+				else resolve(result ?? this.missingResult());
 			};
 			const cancel = () => finish();
 			const listener = this.onDidChange(change => {
@@ -63,6 +65,19 @@ export class StructuralDiffSession extends Disposable {
 			finish();
 		});
 	}
+	/** Why this comparison failed, or `undefined` when every file has a diff. */
+	failure(): { reason: StructuralFailureReason; files: number } | undefined {
+		if (!this.finished || this.disposed) return undefined;
+		const files = [...this.manifest ?? []].filter(path => !this.results.get(path)?.diff).length;
+		const error = this.error;
+		if (!error) return files ? { reason: "file_error", files } : undefined;
+		const reason = error.includes("executable is missing") ? "missing_binary"
+			: error.startsWith("diffr exited with") ? "process_exit"
+				: error.includes("ended before completion") ? "stream_ended"
+					: error.startsWith("diffr stopped early") ? "aborted" : "other";
+		return { reason, files };
+	}
+	private missingResult(): StructuralFileResult { return { error: this.error ?? "diffr did not supply a result for this file." }; }
 	getTextDiff(path: string): StructuralTextDiff | undefined {
 		const diff = this.results.get(path)?.diff;
 		return diff?.type === "text" ? diff : undefined;
@@ -174,7 +189,7 @@ export class StructuralDiffSession extends Disposable {
 	}
 
 	private finishLoading(event: Extract<StructuralEvent, { type: "complete" }>): void {
-		for (const path of this.manifest!) if (!this.results.has(path)) { this.results.set(path, { error: "diffr did not supply a result for this file." }); this.pendingFiles.add(path); }
+		for (const path of this.manifest!) if (!this.results.has(path)) { this.results.set(path, this.missingResult()); this.pendingFiles.add(path); }
 		this.finished = true;
 		if (event.aborted) this.error = `diffr stopped early: ${event.aborted.message}`;
 	}
