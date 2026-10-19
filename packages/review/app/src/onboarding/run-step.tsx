@@ -18,6 +18,7 @@ import { iconStyles } from "@canvas/ui/icon-styles";
 import {
   CopyIcon,
   FolderIcon,
+  PlusIcon,
   RefreshIcon,
   SearchIcon,
 } from "@canvas/ui/icons";
@@ -123,16 +124,20 @@ export function RunStep({
   setupActions,
   intro,
   embedded = false,
+  projectPath,
   onStarted,
   onCopy,
+  onStartEmpty,
 }: {
   client: OnboardingClient;
   setupActions: ReviewCanvasSetupActions;
   intro?: StepIntro;
   embedded?: boolean;
+  projectPath?: string;
   /** The whiteboard is made and opening, with its agent at work. */
   onStarted?(reviewId: string, agent: OnboardingRunAgent["id"]): void;
   onCopy(prompt: string): void;
+  onStartEmpty?(projectPath: string): Promise<void>;
 }) {
   const [projects, setProjects] = useState<ReviewOnboardingProject[]>([]);
 
@@ -154,6 +159,7 @@ export function RunStep({
   const [agent, setAgent] = useState<OnboardingRunAgent["id"]>();
   const [error, setError] = useState<string>();
   const [starting, setStarting] = useState(false);
+  const [startingEmpty, setStartingEmpty] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const open = useCallback(
@@ -246,7 +252,14 @@ export function RunStep({
         setAgents(available);
         setAgent((current) => current ?? available[0]?.id);
 
-        if (known[0]) void open(known[0]);
+        const first = projectPath
+          ? (known.find((candidate) => candidate.path === projectPath) ?? {
+              path: projectPath,
+              name: folderName(projectPath),
+            })
+          : known[0];
+
+        if (first) void open(first);
         else setLoading(false);
       },
       (cause: unknown) => {
@@ -259,7 +272,7 @@ export function RunStep({
     return () => {
       live = false;
     };
-  }, [client, open]);
+  }, [client, open, projectPath]);
 
   const targets = discovered?.targets ?? [];
 
@@ -318,6 +331,20 @@ export function RunStep({
     }
   }, [agent, canDraw, client, discovered, onStarted, prompt, target]);
 
+  const startEmpty = useCallback(async () => {
+    if (startingEmpty || !project || !onStartEmpty) return;
+    setStartingEmpty(true);
+    setError(undefined);
+
+    try {
+      await onStartEmpty(project.path);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setStartingEmpty(false);
+    }
+  }, [onStartEmpty, project, startingEmpty]);
+
   const canCopy = target !== undefined && prompt.trim() !== "";
 
   const copy = useCallback(() => {
@@ -375,7 +402,19 @@ export function RunStep({
         embedded && styles.fitEmbedded,
       )}
     >
-      {intro ? <ScreenHeader {...intro} /> : null}
+      {intro ? (
+        <ScreenHeader {...intro}>
+          {onStartEmpty && project ? (
+            <Button
+              aria-busy={startingEmpty || undefined}
+              onClick={() => void startEmpty()}
+            >
+              <PlusIcon xstyle={iconStyles.inline} />
+              Empty whiteboard
+            </Button>
+          ) : null}
+        </ScreenHeader>
+      ) : null}
       <div
         {...stylex.props(
           onboardingStyles.panel,
@@ -594,8 +633,20 @@ export function RunStep({
         {/* One sentence: copy the prompt for the reader's own agent, or draw
             with the chip's agent, whose menu is the only thing to toggle. */}
         <div {...stylex.props(styles.footer)}>
+          {/* Home's empty state has no header. */}
+          {onStartEmpty && project && !intro ? (
+            <Button
+              variant="ghost"
+              aria-busy={startingEmpty || undefined}
+              onClick={() => void startEmpty()}
+              xstyle={styles.startEmpty}
+            >
+              <PlusIcon xstyle={iconStyles.inline} />
+              Start empty in {project.name}
+            </Button>
+          ) : null}
           {agents.length ? (
-            <>
+            <span {...stylex.props(styles.drawWith)}>
               <span {...stylex.props(styles.lead)}>
                 Copy for your agent, or use
               </span>
@@ -644,7 +695,7 @@ export function RunStep({
                   </OptionMenu>
                 ) : null}
               </span>
-            </>
+            </span>
           ) : loading ? null : (
             <span {...stylex.props(styles.source)}>
               Copy for your agent; none Whiteboard can run is installed here.
@@ -908,12 +959,23 @@ const styles = stylex.create({
   // The sentence ends at the row's end, under the prompt's Copy.
   footer: {
     display: "flex",
+    flexWrap: "wrap",
     alignItems: "center",
     justifyContent: "flex-end",
     gap: space.s10,
     flexShrink: 0,
     paddingBlock: `${space.s18} ${space.s10}`,
     paddingInline: space.s12,
+  },
+  drawWith: {
+    display: "flex",
+    alignItems: "center",
+    gap: space.s10,
+  },
+  startEmpty: {
+    marginInlineEnd: "auto",
+    fontFamily: tokens.fontMono,
+    fontSize: fontSize.ui,
   },
   lead: {
     color: tokens.inkMuted,

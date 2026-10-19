@@ -210,8 +210,8 @@ describe("Home's New whiteboard", () => {
     expect(prompt.value).toBe("Walk me through the agent's change.");
   });
 
-  it("opens from the workbench's New Whiteboard command, except in Trash", async () => {
-    const { respond } = server();
+  it("opens once from the workbench, in the project it names", async () => {
+    const { respond, release } = server();
 
     vi.stubGlobal("fetch", respond);
 
@@ -220,34 +220,75 @@ describe("Home's New whiteboard", () => {
       setupActions: setupActions(),
     };
 
+    const data = {
+      reviews: [summary("Plan")],
+      newWhiteboard: { via: "sidebar" as const, projectPath: SLOW.path },
+    };
+
     await act(async () => {
       canvas = mountReviewCanvas(
         container,
-        { kind: "home", data: { view: "trash", reviews: [] }, host },
+        { kind: "home", data, host },
         testCanvasUi().ui,
       );
     });
+    release();
+    await settle();
 
-    expect(canvas?.newWhiteboard()).toBe(false);
+    expect(container.textContent).toContain("New whiteboard.");
+    expect(target("slow-work")).toBeDefined();
 
-    await act(async () =>
-      canvas?.update({
-        kind: "home",
-        data: { reviews: [summary("Plan")] },
-        host,
-      }),
+    const back = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Whiteboards"),
     );
 
-    let opened: boolean | undefined;
+    await act(async () => back?.click());
+    await act(async () => canvas?.update({ kind: "home", data, host }));
+    await settle();
+
+    expect(container.textContent).not.toContain("New whiteboard.");
+  });
+
+  it("starts an empty whiteboard in the chosen project", async () => {
+    const { respond } = server();
+
+    vi.stubGlobal("fetch", respond);
+
+    const createWhiteboard = vi.fn<
+      NonNullable<ReviewCanvasHomeHost["createWhiteboard"]>
+    >(async () => {});
+
+    const host: ReviewCanvasHomeHost = {
+      openReview: vi.fn<ReviewCanvasHomeHost["openReview"]>(),
+      setupActions: setupActions(),
+      createWhiteboard,
+    };
 
     await act(async () => {
-      opened = canvas?.newWhiteboard();
+      canvas = mountReviewCanvas(
+        container,
+        {
+          kind: "home",
+          data: {
+            reviews: [summary("Plan")],
+            newWhiteboard: { via: "command" },
+          },
+          host,
+        },
+        testCanvasUi().ui,
+      );
     });
     await settle();
 
-    expect(opened).toBe(true);
-    expect(container.textContent).toContain("New whiteboard.");
-    expect(target("agent-work")).toBeDefined();
+    const empty = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Empty whiteboard",
+    );
+
+    await act(async () => empty?.click());
+    await settle();
+
+    expect(createWhiteboard).toHaveBeenCalledExactlyOnceWith(PROJECT.path);
+    expect(container.textContent).not.toContain("New whiteboard.");
   });
 
   it("shows a chosen project at once, before its targets load", async () => {

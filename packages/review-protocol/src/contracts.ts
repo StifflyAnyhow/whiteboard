@@ -1040,6 +1040,13 @@ export interface ReviewCanvasHomeData {
   // Absent when the install status endpoint is unavailable.
   installStatus?: ReviewCliInstallStatus;
   onboarding?: ReviewCanvasOnboarding;
+  /** Opens New whiteboard; sent with one update only. */
+  newWhiteboard?: ReviewCanvasNewWhiteboardRequest;
+}
+
+export interface ReviewCanvasNewWhiteboardRequest {
+  via: "command" | "sidebar";
+  projectPath?: string;
 }
 
 /**
@@ -1064,6 +1071,8 @@ export interface ReviewCanvasHomeHost {
   openSourceTree?(uuid: string): void;
   install?: ReviewCanvasInstallActions;
   setupActions?: ReviewCanvasSetupActions;
+  /** Makes an empty whiteboard and opens it. */
+  createWhiteboard?(repositoryPath: string): Promise<void>;
 }
 
 /** What the Welcome tab shows; a new snapshot on every change. */
@@ -1100,9 +1109,6 @@ export interface ReviewCanvasHandle extends ReviewDisposable {
   /** Undefined when the canvas shows no review. */
   diffFiles(): Promise<readonly ReviewDiffFileWire[]> | undefined;
   revealDiffFile(path: string): void;
-  /** Opens New whiteboard; false when the canvas is not on a Home that can
-   * draw one (Trash, first run, another tab). */
-  newWhiteboard(): boolean;
   /** Opens the voluntary feedback form in the current canvas. */
   showFeedback(): void;
 }

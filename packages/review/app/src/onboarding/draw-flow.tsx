@@ -38,17 +38,21 @@ export function DrawFlow({
   setupActions,
   intro,
   embedded,
+  projectPath,
   onStarted,
   onCopied,
   onRunStarted,
+  onStartEmpty,
 }: {
   client: OnboardingClient;
   setupActions: ReviewCanvasSetupActions;
   intro?: StepIntro;
   embedded?: boolean;
+  projectPath?: string;
   onRunStarted?(mode: "draw" | "copy", agent?: OnboardingRunAgent["id"]): void;
   onStarted?(reviewId: string): void;
   onCopied?(): void;
+  onStartEmpty?(projectPath: string): Promise<void>;
 }) {
   const notify = useNotify();
 
@@ -83,6 +87,8 @@ export function DrawFlow({
       setupActions={setupActions}
       intro={intro}
       embedded={embedded}
+      projectPath={projectPath}
+      onStartEmpty={onStartEmpty}
       onStarted={(reviewId, agent) => {
         onRunStarted?.("draw", agent);
         onStarted?.(reviewId);
