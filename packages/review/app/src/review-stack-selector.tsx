@@ -1,10 +1,14 @@
 import { fontSize, fontWeight, radius } from "@canvas/scale.stylex";
+import { PullRequestStateIcon } from "@canvas/ui/board-icons";
 import { buttonStyles } from "@canvas/ui/button";
 import { focusStyles } from "@canvas/ui/focus";
 import { BranchIcon, ChevronDownIcon, PullRequestIcon } from "@canvas/ui/icons";
+import { listRowStyles } from "@canvas/ui/list-row";
 import { menuStyles, moveMenuFocus } from "@canvas/ui/menu";
+import { pillStyles } from "@canvas/ui/pill";
 import { Popover } from "@canvas/ui/popover";
 import { textStyles } from "@canvas/ui/text";
+import { useTooltip } from "@canvas/ui/tooltip";
 import {
   PULL_REQUEST_STATE_LABELS,
   type ReviewStackLayer,
@@ -21,7 +25,6 @@ import {
   useState,
 } from "react";
 
-import { PullRequestStateIcon } from "./board-icons";
 import { DisplayedReviewVersionContext } from "./displayed-review-version-context";
 import { useReviewSession } from "./host/review-session";
 import { tokens } from "./tokens.stylex";
@@ -115,7 +118,13 @@ export function ReviewStackSelector(): ReactElement | null {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`Stack, ${index + 1} of ${layers.length}`}
-        {...stylex.props(styles.pill)}
+        {...stylex.props(
+          focusStyles.ring,
+          buttonStyles.reset,
+          pillStyles.pill,
+          pillStyles.accent,
+          styles.pill,
+        )}
         onClick={() => setOpen(!open)}
       >
         <PullRequestIcon xstyle={styles.pillIcon} />
@@ -136,9 +145,7 @@ export function ReviewStackSelector(): ReactElement | null {
           onKeyDown={(event) => moveMenuFocus(event)}
         >
           <div {...stylex.props(menuStyles.label, styles.heading)}>
-            <span {...stylex.props(textStyles.eyebrow, styles.headingName)}>
-              Stack
-            </span>
+            <span {...stylex.props(textStyles.sectionTitle)}>Stack</span>
             <span>
               {layers.some((layer) => layer.base)
                 ? "from branch bases"
@@ -155,10 +162,19 @@ export function ReviewStackSelector(): ReactElement | null {
           ))}
           {base ? (
             <>
-              <div role="separator" {...stylex.props(styles.rule)} />
+              <div
+                role="separator"
+                {...stylex.props(menuStyles.separator, styles.rule)}
+              />
               <div {...stylex.props(styles.baseRow)}>
                 <span {...stylex.props(styles.slot)} />
-                <span {...stylex.props(styles.branch, styles.faint)}>
+                <span
+                  {...stylex.props(
+                    textStyles.truncate,
+                    styles.branch,
+                    styles.faint,
+                  )}
+                >
                   {base}
                 </span>
                 <span>base</span>
@@ -186,32 +202,34 @@ function LayerRow({
   const reviewed = Boolean(layer.reviewUuid);
   const disabled = !current && !openable(layer);
 
+  const tooltip = useTooltip(
+    current
+      ? ""
+      : disabled
+        ? "No whiteboard of this pull request yet"
+        : reviewed
+          ? "Open whiteboard (Cmd/Ctrl-click to open in the background)"
+          : "Create a whiteboard of this branch (Cmd/Ctrl-click to open in the background)",
+  );
+
   const open = (event: OpenEvent) => {
     if (!current) onOpen(layer, event);
   };
 
   return (
     <button
+      ref={tooltip}
       type="button"
       role="menuitem"
       aria-current={current || undefined}
       data-relation={layer.relation}
       disabled={disabled}
-      title={
-        current
-          ? undefined
-          : disabled
-            ? "No whiteboard of this pull request yet"
-            : reviewed
-              ? "Open whiteboard (Cmd/Ctrl-click to open in the background)"
-              : "Create a whiteboard of this branch (Cmd/Ctrl-click to open in the background)"
-      }
       {...stylex.props(
         focusStyles.ringInset,
         buttonStyles.reset,
         menuStyles.item,
         styles.row,
-        current && styles.rowCurrent,
+        current && [listRowStyles.current, styles.rowCurrent],
       )}
       onClick={open}
       onAuxClick={(event) => {
@@ -228,11 +246,18 @@ function LayerRow({
       ) : (
         <span aria-hidden="true" {...stylex.props(styles.unreviewed)} />
       )}
-      <span {...stylex.props(styles.branch, current && styles.branchCurrent)}>
+      <span
+        {...stylex.props(
+          textStyles.truncate,
+          styles.branch,
+          current && styles.branchCurrent,
+        )}
+      >
         {layer.branch}
       </span>
       <span
         {...stylex.props(
+          textStyles.truncate,
           styles.title,
           current && styles.titleCurrent,
           !reviewed && styles.faint,
@@ -261,21 +286,11 @@ function LayerRow({
 const styles = stylex.create({
   control: { display: "inline-flex", flexShrink: 0 },
   pill: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "6px",
     height: "24px",
     paddingBlock: 0,
     paddingInline: "9px",
-    borderWidth: 0,
-    borderRadius: radius.pill,
-    backgroundColor: tokens.accentWash,
-    boxShadow: `inset 0 0 0 1px ${tokens.accentOutline}`,
-    color: tokens.accent,
-    fontFamily: tokens.chromeFont,
     fontSize: fontSize.ui,
     lineHeight: "16px",
-    whiteSpace: "nowrap",
     cursor: "pointer",
   },
   pillIcon: { width: "13px", height: "13px" },
@@ -289,15 +304,10 @@ const styles = stylex.create({
     justifyContent: "space-between",
     padding: "6px 10px 8px",
     color: tokens.inkFaint,
-    fontFamily: tokens.chromeFont,
     fontSize: fontSize.small,
   },
-  headingName: { color: tokens.inkMuted, fontSize: fontSize.small },
   row: { gap: "10px", minHeight: "34px", paddingInline: "10px" },
-  rowCurrent: {
-    backgroundColor: tokens.markerTint,
-    cursor: "default",
-  },
+  rowCurrent: { cursor: "default" },
   branchIcon: { width: "14px", height: "14px", color: tokens.inkMuted },
   // A branch with no whiteboard: an empty, dashed place.
   unreviewed: {
@@ -314,22 +324,16 @@ const styles = stylex.create({
   branch: {
     flexShrink: 0,
     width: "136px",
-    overflow: "hidden",
     color: tokens.inkMuted,
     fontFamily: tokens.fontMono,
     fontSize: fontSize.body,
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
   },
   branchCurrent: { color: tokens.ink },
   title: {
     flex: "1 1 0",
     minWidth: 0,
-    overflow: "hidden",
     color: tokens.ink,
     fontSize: fontSize.ui,
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
   },
   titleCurrent: { fontWeight: fontWeight.medium },
   faint: { color: tokens.inkFaint },
@@ -346,13 +350,7 @@ const styles = stylex.create({
     fontSize: fontSize.body,
     fontWeight: fontWeight.medium,
   },
-  rule: {
-    flexShrink: 0,
-    height: "1px",
-    marginBlock: "4px",
-    marginInline: "6px",
-    backgroundColor: tokens.ruleSoft,
-  },
+  rule: { marginInline: "6px" },
   baseRow: {
     display: "flex",
     flex: "none",
@@ -361,7 +359,6 @@ const styles = stylex.create({
     minHeight: "30px",
     paddingInline: "10px",
     color: tokens.inkFaint,
-    fontFamily: tokens.chromeFont,
     fontSize: fontSize.body,
   },
 });

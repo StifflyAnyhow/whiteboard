@@ -1,4 +1,12 @@
+import { BoardIcon } from "@canvas/ui/board-icons";
 import { AgentLogo } from "@canvas/ui/brand-icons";
+import { buttonStyles } from "@canvas/ui/button";
+import { focusStyles } from "@canvas/ui/focus";
+import { PinIcon } from "@canvas/ui/icons";
+import { listRowStyles } from "@canvas/ui/list-row";
+import { Spinner } from "@canvas/ui/spinner";
+import { StatusDot } from "@canvas/ui/status-dot";
+import { textStyles } from "@canvas/ui/text";
 import {
   type ReviewProjectThread,
   type ReviewSidebarSectionProps,
@@ -8,9 +16,9 @@ import {
 import * as stylex from "@stylexjs/stylex";
 import type { ReactElement } from "react";
 
-import { BoardIcon } from "./board-icons";
 import { FolderLabel } from "./folder-label";
-import { fontSize, fontWeight, motion, radius } from "./scale.stylex";
+import { countLabel, formatRelativeTime } from "./format";
+import { fontSize, fontWeight, radius } from "./scale.stylex";
 import { tokens } from "./tokens.stylex";
 import { SegmentedControl, segmentStyles } from "./ui/segmented";
 
@@ -23,28 +31,6 @@ export function threadOnBoard(
     thread.anchor.board.reviewId === reviewId ||
     thread.edited.some((board) => board.reviewId === reviewId)
   );
-}
-
-/** "2m", "1h", "Yesterday", then the date. */
-function age(updatedAt: string, now = Date.now()): string {
-  const minutes = Math.floor(Math.max(0, now - Date.parse(updatedAt)) / 60_000);
-
-  if (!Number.isFinite(minutes)) return "";
-
-  if (minutes < 1) return "now";
-
-  if (minutes < 60) return `${minutes}m`;
-
-  const hours = Math.floor(minutes / 60);
-
-  if (hours < 24) return `${hours}h`;
-
-  if (hours < 48) return "Yesterday";
-
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-  }).format(Date.parse(updatedAt));
 }
 
 const statusText = {
@@ -73,7 +59,7 @@ function relation(thread: ReviewProjectThread, reviewId: string) {
           ? started
           : edited === 1 && editedHere
             ? `${started} · edited here`
-            : `${started} · edited ${edited} ${edited === 1 ? "board" : "boards"}`,
+            : `${started} · edited ${countLabel(edited, "board")}`,
     };
   }
 
@@ -170,8 +156,11 @@ export function ThreadsSectionBody({
                   type="button"
                   aria-current={threads.open?.includes(thread.id) || undefined}
                   {...stylex.props(
+                    focusStyles.ringInset,
+                    buttonStyles.reset,
+                    listRowStyles.wash,
                     styles.row,
-                    threads.open?.includes(thread.id) && styles.rowOpen,
+                    threads.open?.includes(thread.id) && listRowStyles.current,
                   )}
                   onClick={() => onOpenThread?.(thread.id)}
                 >
@@ -193,11 +182,14 @@ export function ThreadsSectionBody({
                     </span>
                     <span {...stylex.props(styles.spacer)} />
                     <span {...stylex.props(styles.status)}>
-                      {age(thread.updatedAt)}
+                      {formatRelativeTime(thread.updatedAt, Date.now(), {
+                        short: true,
+                      })}
                     </span>
                   </span>
                   <span
                     {...stylex.props(
+                      textStyles.truncate,
                       styles.opening,
                       thread.unread && styles.openingUnread,
                     )}
@@ -208,9 +200,16 @@ export function ThreadsSectionBody({
                     {board ? (
                       <BoardIcon icon={board.icon} xstyle={styles.kind} />
                     ) : (
-                      <PinIcon />
+                      <PinIcon xstyle={styles.pin} />
                     )}
-                    <span {...stylex.props(styles.relationText)}>{text}</span>
+                    <span
+                      {...stylex.props(
+                        textStyles.truncate,
+                        styles.relationText,
+                      )}
+                    >
+                      {text}
+                    </span>
                     {suffix ? (
                       <span {...stylex.props(styles.relationSuffix)}>
                         {suffix}
@@ -246,72 +245,21 @@ function ThreadMark({ thread }: { thread: ReviewProjectThread }): ReactElement {
   if (threadAnswering(thread))
     return (
       <span {...stylex.props(styles.mark)}>
-        <ThreadSpinner />
+        <Spinner tone="accent" label="Answering" xstyle={styles.spinner} />
       </span>
     );
-
-  const dot =
-    thread.status === "waiting"
-      ? styles.dotWaiting
-      : thread.unread
-        ? styles.dotUnread
-        : null;
 
   return (
     <span {...stylex.props(styles.mark)}>
       <AgentLogo agent={thread.agent} xstyle={styles.logo} />
-      {dot ? (
-        <span
-          role="img"
-          aria-label={
-            thread.status === "waiting"
-              ? "Needs you"
-              : "Answered since you looked"
-          }
-          {...stylex.props(styles.dot, dot)}
-        />
+      {thread.status === "waiting" ? (
+        <StatusDot label="Needs you" tone="warning" size="small" />
+      ) : thread.unread ? (
+        <StatusDot label="Answered since you looked" size="small" />
       ) : null}
     </span>
   );
 }
-
-/** A marker arc turning on a faint track: an agent is answering. */
-export function ThreadSpinner(): ReactElement {
-  return (
-    <svg
-      role="img"
-      aria-label="Answering"
-      width="11"
-      height="11"
-      viewBox="0 0 11 11"
-      {...stylex.props(styles.spinner)}
-    >
-      <circle cx="5.5" cy="5.5" r="3.75" {...stylex.props(styles.track)} />
-      <path
-        d="M5.5 1.75 A3.75 3.75 0 0 1 9.25 5.5"
-        {...stylex.props(styles.arc)}
-      />
-    </svg>
-  );
-}
-
-function PinIcon(): ReactElement {
-  return (
-    <svg
-      aria-hidden="true"
-      width="11"
-      height="11"
-      viewBox="0 0 12 12"
-      {...stylex.props(styles.pin)}
-    >
-      <path d="M6 1.5 V7 M3.5 4 Q3.5 7 6 7 Q8.5 7 8.5 4 M6 7 V10.5" />
-    </svg>
-  );
-}
-
-const reducedMotion = "@media (prefers-reduced-motion: reduce)";
-
-const spin = stylex.keyframes({ to: { transform: "rotate(360deg)" } });
 
 const styles = stylex.create({
   scope: {
@@ -345,14 +293,11 @@ const styles = stylex.create({
     width: "100%",
     minWidth: 0,
     padding: "8px",
-    borderWidth: 0,
     borderRadius: radius.control,
-    backgroundColor: { default: "transparent", ":hover": tokens.markerTint },
     color: tokens.ink,
     textAlign: "start",
     cursor: "pointer",
   },
-  rowOpen: { backgroundColor: tokens.markerTint },
   line: {
     display: "flex",
     alignItems: "center",
@@ -369,34 +314,7 @@ const styles = stylex.create({
     height: "10px",
   },
   logo: { width: "10px", height: "10px" },
-  dot: {
-    position: "absolute",
-    top: "-3px",
-    right: "-3px",
-    boxSizing: "border-box",
-    width: "6px",
-    height: "6px",
-    borderWidth: "1.5px",
-    borderStyle: "solid",
-    borderColor: tokens.tray,
-    borderRadius: radius.round,
-  },
-  dotUnread: { backgroundColor: tokens.accent },
-  dotWaiting: { backgroundColor: tokens.changeModified },
-  spinner: {
-    flexShrink: 0,
-    animationName: { default: spin, [reducedMotion]: "none" },
-    animationDuration: motion.spin,
-    animationIterationCount: "infinite",
-    animationTimingFunction: "linear",
-  },
-  track: { fill: "none", stroke: tokens.ruleSoft, strokeWidth: 1.4 },
-  arc: {
-    fill: "none",
-    stroke: tokens.accent,
-    strokeLinecap: "round",
-    strokeWidth: 1.4,
-  },
+  spinner: { width: "11px", height: "11px" },
   agent: {
     flexShrink: 0,
     color: tokens.ink,
@@ -415,24 +333,18 @@ const styles = stylex.create({
   statusRunning: { color: tokens.inkMuted },
   spacer: { flex: "1 1 0" },
   opening: {
-    overflow: "hidden",
     color: tokens.ink,
     fontFamily: tokens.fontSerif,
     fontSize: fontSize.title,
     lineHeight: "19px",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
   },
   openingUnread: { fontWeight: fontWeight.medium },
   relation: { gap: "5px" },
   relationText: {
-    overflow: "hidden",
     color: tokens.inkMuted,
     fontFamily: tokens.chromeFont,
     fontSize: fontSize.body,
     lineHeight: "16px",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
   },
   // " · edited here" stays when the board's title is cut short.
   relationSuffix: {
@@ -444,11 +356,5 @@ const styles = stylex.create({
     whiteSpace: "pre",
   },
   kind: { width: "12px", height: "12px", color: tokens.inkFaint },
-  pin: {
-    flexShrink: 0,
-    fill: "none",
-    stroke: tokens.inkFaint,
-    strokeLinecap: "round",
-    strokeWidth: 1.1,
-  },
+  pin: { width: "11px", height: "11px", color: tokens.inkFaint },
 });

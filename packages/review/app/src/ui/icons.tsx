@@ -191,6 +191,24 @@ export function SortIcon({ xstyle }: IconProps = {}): ReactElement {
   );
 }
 
+/** Oldest first: the arrow points back up the list. */
+export function SortAscendingIcon({ xstyle }: IconProps = {}): ReactElement {
+  return (
+    <Icon xstyle={xstyle}>
+      <path d="M6 19.5v-15M2.25 8.25 6 4.5l3.75 3.75M12.75 6.75h9M12.75 12h6.75M12.75 17.25h4.5" />
+    </Icon>
+  );
+}
+
+/** Newest first. */
+export function SortDescendingIcon({ xstyle }: IconProps = {}): ReactElement {
+  return (
+    <Icon xstyle={xstyle}>
+      <path d="M6 4.5v15M2.25 15.75 6 19.5l3.75-3.75M12.75 6.75h9M12.75 12h6.75M12.75 17.25h4.5" />
+    </Icon>
+  );
+}
+
 export function SlidersIcon({ xstyle }: IconProps = {}): ReactElement {
   return (
     <Icon xstyle={xstyle}>
@@ -260,16 +278,6 @@ export function FolderIcon({ xstyle }: IconProps = {}): ReactElement {
   return (
     <Icon xstyle={xstyle}>
       <path d="M3 6.75V18h18V9h-9l-2.25-2.25z" />
-    </Icon>
-  );
-}
-
-/** A whiteboard: a framed page of lines. */
-export function BoardIcon({ xstyle }: IconProps = {}): ReactElement {
-  return (
-    <Icon xstyle={xstyle}>
-      <rect x="3" y="4.5" width="18" height="15" rx="2.25" />
-      <path d="M7.5 9h9M7.5 13.5h6" />
     </Icon>
   );
 }
@@ -362,6 +370,15 @@ export function MoreIcon({ xstyle }: IconProps = {}): ReactElement {
   );
 }
 
+/** A thread pinned to the passage it asks about. */
+export function PinIcon({ xstyle }: IconProps = {}): ReactElement {
+  return (
+    <Icon xstyle={xstyle}>
+      <path d="M12 3v11M7 8q0 6 5 6t5-6M12 14v7" />
+    </Icon>
+  );
+}
+
 export function MapPinIcon({ xstyle }: IconProps = {}): ReactElement {
   return (
     <Icon xstyle={xstyle}>
@@ -375,6 +392,16 @@ export function CodeIcon({ xstyle }: IconProps = {}): ReactElement {
   return (
     <Icon xstyle={xstyle}>
       <path d="m9 7-5 5 5 5m6-10 5 5-5 5" />
+    </Icon>
+  );
+}
+
+/** A commit: a node on its line. */
+export function CommitIcon({ xstyle }: IconProps = {}): ReactElement {
+  return (
+    <Icon xstyle={xstyle}>
+      <circle cx="12" cy="12" r="3.75" />
+      <path d="M2.25 12h6M15.75 12h6" />
     </Icon>
   );
 }

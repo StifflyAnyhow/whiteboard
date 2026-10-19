@@ -1,3 +1,13 @@
+import { BoardIcon, PullRequestStateIcon } from "@canvas/ui/board-icons";
+import { IconButton, buttonStyles } from "@canvas/ui/button";
+import { CrumbSeparator } from "@canvas/ui/crumbs";
+import { DisclosureChevron, disclosureStyles } from "@canvas/ui/disclosure";
+import { focusStyles } from "@canvas/ui/focus";
+import { iconStyles } from "@canvas/ui/icon-styles";
+import { PlusIcon, SearchIcon } from "@canvas/ui/icons";
+import { listRowStyles } from "@canvas/ui/list-row";
+import { textStyles } from "@canvas/ui/text";
+import { fieldStyles } from "@canvas/ui/text-field";
 import { TooltipHostContext, useTooltip } from "@canvas/ui/tooltip";
 import {
   type ReviewApiSummary,
@@ -17,17 +27,17 @@ import {
   useState,
 } from "react";
 
-import { BoardIcon, PullRequestStateIcon } from "./board-icons";
 import { ChangedBadge } from "./changed-badge";
 import { CommitChanges, CommitPicker } from "./commit-picker";
 import { FolderLabel } from "./folder-label";
 import { countLabel } from "./format";
 import { reviewPreferenceKey } from "./host/review-client";
 import { LensProgress, LensRows } from "./lens-list";
+import { chevronMarker } from "./markers.stylex";
 import { type ReviewTocEntry, headingDepth } from "./review-document-headings";
 import { worktreeLabel } from "./review-home-model";
 import { readReviewUiState, writeReviewUiState } from "./review-ui-state";
-import { fontSize, fontWeight, radius, tracking } from "./scale.stylex";
+import { fontSize, fontWeight, radius } from "./scale.stylex";
 import { ThreadsSectionBody } from "./sidebar-threads";
 import { tokens } from "./tokens.stylex";
 import {
@@ -197,7 +207,14 @@ export function WhiteboardsList({
             type="button"
             aria-expanded={showAll}
             data-show-more=""
-            {...stylex.props(styles.row, styles.treeRow, styles.more)}
+            {...stylex.props(
+              focusStyles.ringInset,
+              buttonStyles.reset,
+              listRowStyles.row,
+              listRowStyles.wash,
+              styles.treeRow,
+              styles.more,
+            )}
             onClick={() => setShowAll(!showAll)}
           >
             <span {...stylex.props(styles.chevronSlot)} />
@@ -244,10 +261,11 @@ function BoardRow({
   return (
     <div
       {...stylex.props(
-        styles.row,
+        listRowStyles.row,
+        listRowStyles.wash,
         styles.treeRow,
         nested && styles.nestedRow,
-        (isCurrent || holdsCurrent) && styles.rowCurrent,
+        (isCurrent || holdsCurrent) && listRowStyles.current,
       )}
     >
       {expanded === undefined ? (
@@ -257,40 +275,49 @@ function BoardRow({
           type="button"
           aria-expanded={expanded}
           aria-label={`${expanded ? "Collapse" : "Expand"} ${boardTitle(board.title)}`}
-          {...stylex.props(styles.chevronSlot, styles.chevron)}
+          {...stylex.props(
+            chevronMarker,
+            focusStyles.ringInset,
+            buttonStyles.reset,
+            disclosureStyles.toggle,
+            styles.chevronSlot,
+            styles.chevron,
+          )}
           onClick={onToggle}
         >
-          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-            <path
-              d={
-                expanded
-                  ? "M4.5 6.25 8 10l3.5-3.75"
-                  : "M6.25 4.5 10 8l-3.75 3.5"
-              }
-            />
-          </svg>
+          <DisclosureChevron />
         </button>
       )}
       <button
         type="button"
         aria-current={isCurrent ? "page" : undefined}
-        {...stylex.props(styles.rowMain)}
+        {...stylex.props(
+          focusStyles.ringInset,
+          buttonStyles.reset,
+          styles.rowMain,
+        )}
         onClick={(event) => onOpen(board.reviewId, event)}
       >
         <span {...stylex.props(styles.iconSlot)}>
           <BoardIcon icon={boardIconKind(board.target)} current={isCurrent} />
-          {changed ? <ChangedBadge onIcon /> : null}
+          {changed ? <ChangedBadge /> : null}
         </span>
         {parentTitle ? (
           <span {...stylex.props(styles.path)}>
             <span
-              {...stylex.props(styles.title, styles.pathParent, styles.faint)}
+              {...stylex.props(
+                textStyles.truncate,
+                styles.title,
+                styles.pathParent,
+                styles.faint,
+              )}
             >
               {parentTitle}
             </span>
-            <span {...stylex.props(styles.separator)}>›</span>
+            <CrumbSeparator />
             <span
               {...stylex.props(
+                textStyles.truncate,
                 styles.title,
                 styles.pathLeaf,
                 isCurrent && styles.titleCurrent,
@@ -301,7 +328,11 @@ function BoardRow({
           </span>
         ) : (
           <span
-            {...stylex.props(styles.title, isCurrent && styles.titleCurrent)}
+            {...stylex.props(
+              textStyles.truncate,
+              styles.title,
+              isCurrent && styles.titleCurrent,
+            )}
           >
             {boardTitle(board.title)}
           </span>
@@ -360,11 +391,14 @@ export function ContentsList({
             type="button"
             aria-current={entry.id === active ? "location" : undefined}
             {...stylex.props(
-              styles.row,
+              focusStyles.ringInset,
+              buttonStyles.reset,
+              listRowStyles.row,
+              listRowStyles.wash,
               styles.entry,
               depth(entry) > 1 && styles.nested,
               depth(entry) > 1 && styles.indent(depth(entry) - 2),
-              entry.id === active && styles.rowCurrent,
+              entry.id === active && listRowStyles.current,
             )}
             onClick={() => onOpen(entry.id)}
           >
@@ -380,6 +414,7 @@ export function ContentsList({
             ) : null}
             <span
               {...stylex.props(
+                textStyles.truncate,
                 styles.title,
                 styles.entryText,
                 depth(entry) > 1 && styles.entryTextNested,
@@ -488,23 +523,16 @@ function WhiteboardsSectionBody({
 
   return (
     <div data-searching={query.trim() ? "" : undefined}>
-      <label {...stylex.props(styles.search)}>
-        <svg
-          width="13"
-          height="13"
-          viewBox="0 0 14 14"
-          aria-hidden="true"
-          {...stylex.props(styles.searchIcon)}
-        >
-          <circle cx="6" cy="6" r="3.75" />
-          <path d="M8.75 8.75 L11.5 11.5" />
-        </svg>
+      <label
+        {...stylex.props(fieldStyles.box, fieldStyles.shell, styles.search)}
+      >
+        <SearchIcon xstyle={styles.searchIcon} />
         <input
           type="search"
           value={query}
           placeholder="Find a whiteboard"
           aria-label="Find a whiteboard"
-          {...stylex.props(styles.searchInput)}
+          {...stylex.props(fieldStyles.bare, styles.searchInput)}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Escape") setQuery("");
@@ -586,8 +614,20 @@ function GroupHeader({
 }): ReactElement {
   return (
     <div {...stylex.props(styles.groupHeader)}>
-      <span {...stylex.props(styles.groupTitle)}>{title}</span>
-      {count ? <span {...stylex.props(styles.groupCount)}>{count}</span> : null}
+      <span {...stylex.props(textStyles.sectionTitle, styles.groupTitle)}>
+        {title}
+      </span>
+      {count ? (
+        <span
+          {...stylex.props(
+            textStyles.count,
+            textStyles.truncate,
+            styles.groupCount,
+          )}
+        >
+          {count}
+        </span>
+      ) : null}
       {children ? (
         <span {...stylex.props(styles.groupAction)}>{children}</span>
       ) : null}
@@ -608,17 +648,14 @@ function NewWhiteboardButton({
   });
 
   return (
-    <button
+    <IconButton
       ref={tooltip}
-      type="button"
+      size="small"
       aria-label="New whiteboard"
-      {...stylex.props(styles.headerAction)}
       onClick={onClick}
     >
-      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-        <path d="M6 2.25 V9.75 M2.25 6 H9.75" />
-      </svg>
-    </button>
+      <PlusIcon xstyle={iconStyles.inline} />
+    </IconButton>
   );
 }
 
@@ -800,7 +837,13 @@ function RecentBoards({
               type="button"
               aria-expanded={showAll}
               data-show-more=""
-              {...stylex.props(styles.row, styles.treeRow, styles.more)}
+              {...stylex.props(
+                buttonStyles.reset,
+                listRowStyles.row,
+                listRowStyles.wash,
+                styles.treeRow,
+                styles.more,
+              )}
               onClick={() => setShowAll(!showAll)}
             >
               <span {...stylex.props(styles.chevronSlot)} />
@@ -836,31 +879,13 @@ const styles = stylex.create({
     marginBlock: "4px 8px",
     marginInline: "12px",
     paddingInline: "10px",
-    borderWidth: "1px",
-    borderStyle: "solid",
-    borderColor: tokens.rule,
     borderRadius: radius.control,
     backgroundColor: tokens.surface,
   },
-  searchIcon: {
-    flexShrink: 0,
-    fill: "none",
-    stroke: tokens.inkFaint,
-    strokeWidth: 1.2,
-    strokeLinecap: "round",
-  },
+  searchIcon: { width: "13px", height: "13px", color: tokens.inkFaint },
   searchInput: {
     flex: 1,
-    minWidth: 0,
-    padding: 0,
-    borderWidth: 0,
-    outline: "none",
-    backgroundColor: "transparent",
-    color: tokens.ink,
-    fontFamily: tokens.chromeFont,
-    fontSize: fontSize.body,
     lineHeight: "16px",
-    "::placeholder": { color: tokens.inkFaint },
     // Escape clears the search; the platform's clear button would add a
     // second, blue, control.
     "::-webkit-search-cancel-button": { display: "none" },
@@ -872,25 +897,6 @@ const styles = stylex.create({
     padding: "2px 8px 8px",
     listStyle: "none",
   },
-  row: {
-    display: "flex",
-    alignItems: "center",
-    gap: "10px",
-    width: "100%",
-    height: "24px",
-    paddingBlock: 0,
-    paddingInline: "8px",
-    borderWidth: 0,
-    borderRadius: radius.small,
-    backgroundColor: { default: "transparent", ":hover": tokens.markerTint },
-    color: tokens.ink,
-    fontFamily: tokens.chromeFont,
-    fontSize: fontSize.body,
-    lineHeight: "16px",
-    textAlign: "left",
-    cursor: "pointer",
-  },
-  rowCurrent: { backgroundColor: tokens.markerTint },
   // From the pane's edge: the chevron slot at 8px, a top-level icon at
   // 26px and its title at 46px; a child's icon at 42px and title at 62px.
   treeRow: { gap: 0, paddingInline: "0 8px", cursor: "default" },
@@ -904,10 +910,7 @@ const styles = stylex.create({
     minWidth: 0,
     height: "100%",
     padding: 0,
-    borderWidth: 0,
-    backgroundColor: "transparent",
     color: "inherit",
-    font: "inherit",
     textAlign: "left",
     cursor: "pointer",
   },
@@ -917,17 +920,7 @@ const styles = stylex.create({
     width: "16px",
     height: "16px",
   },
-  chevron: {
-    padding: 0,
-    borderWidth: 0,
-    backgroundColor: "transparent",
-    fill: "none",
-    stroke: tokens.inkFaint,
-    strokeWidth: 1.5,
-    strokeLinecap: "round",
-    strokeLinejoin: "round",
-    cursor: "pointer",
-  },
+  chevron: { padding: 0, borderRadius: radius.small },
   path: {
     display: "flex",
     flex: "1 1 auto",
@@ -945,8 +938,8 @@ const styles = stylex.create({
     overscrollBehavior: "contain",
     scrollbarWidth: "thin",
     scrollbarColor: {
-      default: "transparent transparent",
-      ":hover": `${tokens.ghost} transparent`,
+      default: `${tokens.transparent} ${tokens.transparent}`,
+      ":hover": `${tokens.ghost} ${tokens.transparent}`,
     },
   },
   fade: {
@@ -957,15 +950,14 @@ const styles = stylex.create({
   },
   fadeTop: {
     top: 0,
-    backgroundImage: `linear-gradient(to bottom, ${tokens.tray}, transparent)`,
+    backgroundImage: `linear-gradient(to bottom, ${tokens.tray}, ${tokens.transparent})`,
   },
   fadeBottom: {
     bottom: 0,
-    backgroundImage: `linear-gradient(to top, ${tokens.tray}, transparent)`,
+    backgroundImage: `linear-gradient(to top, ${tokens.tray}, ${tokens.transparent})`,
   },
   faint: { color: tokens.inkFaint },
   pathParent: { flex: "0 1 auto" },
-  separator: { flexShrink: 0, color: tokens.inkFaint },
   // The parent's title gives way first; the board's own keeps most of the row.
   pathLeaf: { flex: "0 0 auto", maxWidth: "80%" },
   moreIcon: { marginLeft: "2px" },
@@ -984,62 +976,21 @@ const styles = stylex.create({
     fontSize: fontSize.small,
     lineHeight: "14px",
   },
-  groupTitle: {
-    fontWeight: fontWeight.semibold,
-    letterSpacing: tracking.caps,
-    textTransform: "uppercase",
-    whiteSpace: "nowrap",
-  },
+  groupTitle: { whiteSpace: "nowrap" },
   // A count in Inter; a branch range in it is code.
-  groupCount: {
-    minWidth: 0,
-    overflow: "hidden",
-    color: tokens.inkFaint,
-    fontVariantNumeric: "tabular-nums",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-  },
+  groupCount: { minWidth: 0, color: tokens.inkFaint },
   groupAction: { display: "flex", marginLeft: "auto" },
-  headerAction: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: "20px",
-    height: "20px",
-    padding: 0,
-    borderWidth: 0,
-    borderRadius: radius.small,
-    backgroundColor: {
-      default: "transparent",
-      ":hover": tokens.markerTint,
-    },
-    color: { default: tokens.inkMuted, ":hover": tokens.ink },
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: 1.3,
-    strokeLinecap: "round",
-    cursor: "pointer",
-  },
   moreText: { marginLeft: "6px" },
   entry: { height: "24px" },
   // A subsection's text lines up with its section's, past the number.
   nested: { height: "24px", paddingLeft: "30px" },
   // Each level below a subsection indents one more step.
   indent: (steps: number) => ({ paddingLeft: `${30 + 16 * steps}px` }),
-  more: {
-    height: "24px",
-    cursor: "pointer",
-    backgroundColor: { default: "transparent", ":hover": tokens.markerTint },
-    color: tokens.inkFaint,
-    fontFamily: tokens.chromeFont,
-    fontSize: fontSize.body,
-    lineHeight: "16px",
-  },
+  more: { cursor: "pointer", color: tokens.inkFaint },
   entryNumber: {
     flexShrink: 0,
     width: "12px",
     color: tokens.inkFaint,
-    fontFamily: tokens.chromeFont,
     fontVariantNumeric: "tabular-nums",
     fontSize: fontSize.small,
     lineHeight: "14px",
@@ -1054,13 +1005,7 @@ const styles = stylex.create({
     width: "14px",
     height: "14px",
   },
-  title: {
-    flex: "1 1 auto",
-    minWidth: 0,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-  },
+  title: { flex: "1 1 auto", minWidth: 0 },
   titleCurrent: { fontWeight: fontWeight.medium },
   meta: {
     display: "flex",
@@ -1069,7 +1014,6 @@ const styles = stylex.create({
     width: "34px",
     textAlign: "right",
     color: tokens.inkFaint,
-    fontFamily: tokens.chromeFont,
     fontSize: fontSize.small,
     lineHeight: "14px",
   },

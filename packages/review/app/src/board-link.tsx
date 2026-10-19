@@ -5,7 +5,12 @@ import {
   radius,
   tracking,
 } from "@canvas/scale.stylex";
+import { BoardIcon, PullRequestStateIcon } from "@canvas/ui/board-icons";
+import { CrumbSeparator } from "@canvas/ui/crumbs";
+import { focusStyles } from "@canvas/ui/focus";
 import { surfaceStyles } from "@canvas/ui/surface";
+import { textStyles } from "@canvas/ui/text";
+import { useTooltip } from "@canvas/ui/tooltip";
 import {
   type BoardIconKind,
   type PullRequestState,
@@ -22,7 +27,6 @@ import {
   useState,
 } from "react";
 
-import { BoardIcon, PullRequestStateIcon } from "./board-icons";
 import { formatRelativeTime } from "./format";
 import { useOptionalReviewSession } from "./host/review-session";
 import { tokens } from "./tokens.stylex";
@@ -89,11 +93,15 @@ export function BoardLink({
   const [previewing, setPreviewing] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
+  const missingTooltip = useTooltip<HTMLSpanElement>(
+    target?.missing ? missingLabel(target, blockId) : "",
+  );
+
   if (target?.missing)
     return (
       <span
+        ref={missingTooltip}
         data-unavailable="board"
-        title={missingLabel(target, blockId)}
         {...stylex.props(styles.link, styles.missing)}
       >
         <BoardIcon
@@ -132,7 +140,7 @@ export function BoardLink({
       <a
         href={`#board-${reviewId}`}
         onClick={open}
-        {...stylex.props(styles.link)}
+        {...stylex.props(focusStyles.ring, styles.link)}
       >
         <BoardIcon icon={target?.icon} xstyle={[styles.icon, styles.inherit]} />
         {children}
@@ -350,19 +358,15 @@ function BlockPeek({ target }: { target: BoardLinkTarget }): ReactNode {
     <span role="tooltip" {...stylex.props(surfaceStyles.popover, styles.card)}>
       <span {...stylex.props(styles.top)}>
         <BoardIcon icon={target.icon} xstyle={styles.kind} />
-        <span {...stylex.props(styles.crumb)}>{boardTitle(target.title)}</span>
+        <span {...stylex.props(textStyles.truncate, styles.crumb)}>
+          {boardTitle(target.title)}
+        </span>
         {preview.section ? (
           <>
-            <svg
-              aria-hidden="true"
-              width="10"
-              height="10"
-              viewBox="0 0 10 10"
-              {...stylex.props(styles.chevron)}
-            >
-              <path d="M3.5 2 L6.5 5 L3.5 8" />
-            </svg>
-            <span {...stylex.props(styles.crumb)}>{preview.section}</span>
+            <CrumbSeparator />
+            <span {...stylex.props(textStyles.truncate, styles.crumb)}>
+              {preview.section}
+            </span>
           </>
         ) : null}
         <span {...stylex.props(styles.spacer)} />
@@ -381,7 +385,7 @@ function BlockPeek({ target }: { target: BoardLinkTarget }): ReactNode {
             <span {...stylex.props(styles.badge)}>
               {preview.figure.type.replaceAll("_", " ")}
             </span>
-            <span {...stylex.props(styles.figureTitle)}>
+            <span {...stylex.props(textStyles.truncate, styles.figureTitle)}>
               {preview.figure.title}
             </span>
           </span>
@@ -463,7 +467,7 @@ const styles = stylex.create({
   title: {
     color: tokens.ink,
     fontFamily: tokens.chromeFont,
-    fontSize: fontSize.headline,
+    fontSize: fontSize.display,
     fontWeight: fontWeight.medium,
     letterSpacing: tracking.tight,
     lineHeight: "26px",
@@ -496,22 +500,11 @@ const styles = stylex.create({
     lineHeight: "14px",
   },
   crumb: {
-    overflow: "hidden",
     minWidth: 0,
     color: tokens.inkMuted,
     fontFamily: tokens.chromeFont,
     fontSize: fontSize.body,
     lineHeight: "16px",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-  },
-  chevron: {
-    flexShrink: 0,
-    fill: "none",
-    stroke: tokens.inkFaint,
-    strokeLinecap: "round",
-    strokeLinejoin: "round",
-    strokeWidth: 1.2,
   },
   quote: { display: "flex", gap: "12px", minWidth: 0 },
   bar: {
@@ -536,12 +529,9 @@ const styles = stylex.create({
     minWidth: 0,
   },
   figureTitle: {
-    overflow: "hidden",
     color: tokens.ink,
     fontFamily: tokens.chromeFont,
     fontSize: fontSize.body,
     fontWeight: fontWeight.semibold,
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
   },
 });

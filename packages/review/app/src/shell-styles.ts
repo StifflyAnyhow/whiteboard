@@ -118,7 +118,10 @@ export const shellStyles = stylex.create({
       },
       transform: "translateX(-50%)",
       transitionProperty: "width, background-color",
-      transitionDuration: motion.fast,
+      transitionDuration: {
+        default: motion.fast,
+        [stylex.env.reducedMotion]: motion.instant,
+      },
       // Passing over a divider does not flash it.
       transitionDelay: { default: motion.instant, ":hover": motion.fast },
       content: "''",
@@ -208,7 +211,7 @@ export const shellStyles = stylex.create({
     "--review-fullscreen-inset": "var(--review-page-bar-inset, 0px)",
   },
   pageBar: {
-    height: "40px",
+    height: tokens.reviewPageBarHeight,
     paddingLeft: "calc(16px + var(--review-page-bar-inset, 0px))",
     borderBottomWidth: 0,
   },

@@ -1,8 +1,15 @@
 import { fontSize, radius } from "@canvas/scale.stylex";
+import { BoardIcon, PullRequestStateIcon } from "@canvas/ui/board-icons";
 import { buttonStyles } from "@canvas/ui/button";
+import { CrumbSeparator } from "@canvas/ui/crumbs";
 import { focusStyles } from "@canvas/ui/focus";
+import { iconStyles } from "@canvas/ui/icon-styles";
+import { ChevronDownIcon } from "@canvas/ui/icons";
+import { listRowStyles } from "@canvas/ui/list-row";
 import { menuStyles, moveMenuFocus } from "@canvas/ui/menu";
-import { surfaceStyles } from "@canvas/ui/surface";
+import { Popover } from "@canvas/ui/popover";
+import { textStyles } from "@canvas/ui/text";
+import { useTooltip } from "@canvas/ui/tooltip";
 import {
   type BoardIconKind,
   type PullRequestState,
@@ -14,16 +21,15 @@ import {
   type MouseEvent,
   type ReactElement,
   type ReactNode,
+  type RefObject,
   useEffect,
   useRef,
   useState,
 } from "react";
 
-import { BoardIcon, PullRequestStateIcon } from "./board-icons";
+import { countLabel } from "./format";
 import { useReviewSession } from "./host/review-session";
 import { tokens } from "./tokens.stylex";
-import { useAnchoredPopover } from "./use-anchored-popover";
-import { useDismissOnOutside } from "./use-dismiss-on-outside";
 
 type OpenEvent = Pick<
   MouseEvent,
@@ -66,13 +72,15 @@ export function ReviewBreadcrumb({
   const session = useReviewSession();
   const [open, setOpen] = useState(false);
   const control = useRef<HTMLSpanElement>(null);
-  const popoverRef = useAnchoredPopover(open, control);
-
-  useDismissOnOutside(control, open, setOpen);
 
   const { parent, siblings, board, children = [] } = place;
+  const shown = parent ?? board;
 
-  if (!parent && !board) return null;
+  const nameTooltip = useTooltip<HTMLElement>(
+    shown ? boardTitle(shown.title) : "",
+  );
+
+  if (!shown) return null;
   const index = siblings.findIndex((board) => board.reviewId === reviewId);
 
   const openBoard = (id: string, event: OpenEvent) => {
@@ -106,18 +114,6 @@ export function ReviewBreadcrumb({
       open: (event) => openBoard(board.reviewId, event),
     }));
 
-  const chevron = (
-    <svg
-      aria-hidden="true"
-      width="10"
-      height="10"
-      viewBox="0 0 10 10"
-      {...stylex.props(styles.chevron, styles.separator)}
-    >
-      <path d="M4 2.5 L6.5 5 L4 7.5" />
-    </svg>
-  );
-
   /** A menu button over `rows`, which lists them to jump to. */
   const menu = (
     rows: readonly PlaceRow[],
@@ -136,29 +132,26 @@ export function ReviewBreadcrumb({
         keep > 0 && styles.keeps(keep),
       )}
     >
-      {chevron}
+      <CrumbSeparator />
       <span ref={control} {...stylex.props(styles.control)}>
         <button
           type="button"
           aria-haspopup="menu"
           aria-expanded={open}
           aria-label={label}
-          {...stylex.props(styles.count)}
+          {...stylex.props(focusStyles.ring, buttonStyles.reset, styles.count)}
           onClick={() => setOpen(!open)}
         >
           {content}
-          <svg
-            aria-hidden="true"
-            width="10"
-            height="10"
-            viewBox="0 0 10 10"
-            {...stylex.props(styles.chevron)}
-          >
-            <path d={open ? "M2.5 6 L5 3.5 L7.5 6" : "M2.5 4 L5 6.5 L7.5 4"} />
-          </svg>
+          <ChevronDownIcon xstyle={[styles.chevron, open && iconStyles.flip]} />
         </button>
         {open ? (
-          <PlaceList popover={popoverRef} rows={rows} within={within} />
+          <PlaceList
+            anchor={control}
+            rows={rows}
+            within={within}
+            onDismiss={() => setOpen(false)}
+          />
         ) : null}
       </span>
     </span>
@@ -168,11 +161,17 @@ export function ReviewBreadcrumb({
    * room. */
   const named = (name: string, at: number, of: number) => (
     <>
-      <span data-page-bar-truncates {...stylex.props(styles.name)}>
+      <span
+        data-page-bar-truncates
+        {...stylex.props(textStyles.truncate, styles.name)}
+      >
         {name}
       </span>
       {counted ? (
-        <span data-page-bar-counter {...stylex.props(styles.position)}>
+        <span
+          data-page-bar-counter
+          {...stylex.props(textStyles.count, styles.position)}
+        >
           <span {...stylex.props(styles.dot)}>·</span>
           {at + 1} of {of}
         </span>
@@ -182,7 +181,7 @@ export function ReviewBreadcrumb({
 
   if (!parent) {
     const top = board!;
-    const count = `${children.length} ${children.length === 1 ? "board" : "boards"}`;
+    const count = countLabel(children.length, "board");
 
     return (
       <nav
@@ -192,12 +191,12 @@ export function ReviewBreadcrumb({
         data-page-bar-crumb
       >
         {/* The board on screen: named, not a link. */}
-        <span
-          title={boardTitle(top.title)}
-          {...stylex.props(styles.parent, styles.self)}
-        >
+        <span ref={nameTooltip} {...stylex.props(styles.parent, styles.self)}>
           <BoardIcon icon={top.icon} />
-          <span data-page-bar-truncates {...stylex.props(styles.parentTitle)}>
+          <span
+            data-page-bar-truncates
+            {...stylex.props(textStyles.truncate, styles.parentTitle)}
+          >
             {boardTitle(top.title)}
           </span>
         </span>
@@ -207,7 +206,10 @@ export function ReviewBreadcrumb({
               `${count} in ${boardTitle(top.title)}`,
               boardTitle(top.title),
               counted ? (
-                <span data-page-bar-counter {...stylex.props(styles.position)}>
+                <span
+                  data-page-bar-counter
+                  {...stylex.props(textStyles.count, styles.position)}
+                >
                   {count}
                 </span>
               ) : null,
@@ -225,16 +227,19 @@ export function ReviewBreadcrumb({
       data-page-bar-crumb
     >
       <button
+        ref={nameTooltip}
         type="button"
-        title={boardTitle(parent.title)}
-        {...stylex.props(styles.parent)}
+        {...stylex.props(focusStyles.ring, buttonStyles.reset, styles.parent)}
         onClick={(event) => openBoard(parent.reviewId, event)}
         onAuxClick={(event) => {
           if (event.button === 1) openBoard(parent.reviewId, event);
         }}
       >
         <BoardIcon icon={parent.icon} />
-        <span data-page-bar-truncates {...stylex.props(styles.parentTitle)}>
+        <span
+          data-page-bar-truncates
+          {...stylex.props(textStyles.truncate, styles.parentTitle)}
+        >
           {boardTitle(parent.title)}
         </span>
       </button>
@@ -254,15 +259,18 @@ export function ReviewBreadcrumb({
 /** The places a switcher jumps between, in order, the one on screen
  * marked. */
 function PlaceList({
-  popover,
+  anchor,
   rows,
   within,
+  onDismiss,
 }: {
-  popover: ReturnType<typeof useAnchoredPopover<HTMLDivElement>>;
+  anchor: RefObject<HTMLElement | null>;
   rows: readonly PlaceRow[];
   /** What they belong to. */
   within: string;
+  onDismiss(): void;
 }): ReactElement {
+  const popover = useRef<HTMLDivElement>(null);
   // Desktop shows one board at a time, so it opens every board in front.
   const background = useReviewSession().bridge.reportSidebar === undefined;
 
@@ -271,59 +279,88 @@ function PlaceList({
     popover.current
       ?.querySelector("[aria-current]")
       ?.scrollIntoView({ block: "nearest" });
-  }, [popover]);
+  }, []);
 
   return (
-    <div
+    <Popover
       ref={popover}
-      popover="manual"
+      anchor={anchor}
+      onDismiss={onDismiss}
       role="menu"
       tabIndex={-1}
       aria-label={`In ${within}`}
-      {...stylex.props(surfaceStyles.popover, menuStyles.popover, styles.menu)}
+      xstyle={[menuStyles.popover, styles.menu]}
       onKeyDown={(event) => moveMenuFocus(event)}
     >
       {rows.map((row, index) => (
-        <button
+        <PlaceRowButton
           key={row.key}
-          type="button"
-          role="menuitem"
-          aria-current={row.here || undefined}
-          title={
-            row.here
-              ? undefined
-              : background
-                ? "Open whiteboard (Cmd/Ctrl-click to open in the background)"
-                : "Open whiteboard"
-          }
-          {...stylex.props(
-            focusStyles.ringInset,
-            buttonStyles.reset,
-            menuStyles.item,
-            row.here && menuStyles.itemCurrent,
-            row.here && styles.rowCurrent,
-          )}
-          onClick={(event) => {
-            if (!row.here) row.open(event);
-          }}
-          onAuxClick={(event) => {
-            if (event.button === 1 && !row.here) row.open(event);
-          }}
-        >
-          <span {...stylex.props(styles.number, row.here && styles.numberHere)}>
-            {index + 1}
-          </span>
-          {row.icon ? <BoardIcon icon={row.icon} current={row.here} /> : null}
-          <span {...stylex.props(styles.title)}>{row.title}</span>
-          {row.pullRequestNumber ? (
-            <PullRequestStateIcon
-              number={row.pullRequestNumber}
-              state={row.pullRequestState}
-            />
-          ) : null}
-        </button>
+          row={row}
+          number={index + 1}
+          background={background}
+        />
       ))}
-    </div>
+    </Popover>
+  );
+}
+
+function PlaceRowButton({
+  row,
+  number,
+  background,
+}: {
+  row: PlaceRow;
+  number: number;
+  background: boolean;
+}): ReactElement {
+  const tooltip = useTooltip(
+    row.here
+      ? ""
+      : background
+        ? "Open whiteboard (Cmd/Ctrl-click to open in the background)"
+        : "Open whiteboard",
+  );
+
+  return (
+    <button
+      ref={tooltip}
+      type="button"
+      role="menuitem"
+      aria-current={row.here || undefined}
+      {...stylex.props(
+        focusStyles.ringInset,
+        buttonStyles.reset,
+        menuStyles.item,
+        row.here && menuStyles.itemCurrent,
+        row.here && [listRowStyles.current, styles.rowCurrent],
+      )}
+      onClick={(event) => {
+        if (!row.here) row.open(event);
+      }}
+      onAuxClick={(event) => {
+        if (event.button === 1 && !row.here) row.open(event);
+      }}
+    >
+      <span
+        {...stylex.props(
+          textStyles.count,
+          styles.number,
+          row.here && styles.numberHere,
+        )}
+      >
+        {number}
+      </span>
+      {row.icon ? <BoardIcon icon={row.icon} current={row.here} /> : null}
+      <span {...stylex.props(textStyles.truncate, styles.title)}>
+        {row.title}
+      </span>
+      {row.pullRequestNumber ? (
+        <PullRequestStateIcon
+          number={row.pullRequestNumber}
+          state={row.pullRequestState}
+        />
+      ) : null}
+    </button>
   );
 }
 
@@ -342,8 +379,7 @@ const styles = stylex.create({
     minWidth: "48px",
     maxWidth: "440px",
     padding: 0,
-    borderWidth: 0,
-    backgroundColor: "transparent",
+    borderRadius: radius.small,
     color: { default: tokens.inkMuted, ":hover": tokens.ink },
     cursor: "pointer",
   },
@@ -351,12 +387,9 @@ const styles = stylex.create({
   self: { color: tokens.ink, cursor: "default" },
   parentTitle: {
     minWidth: 0,
-    overflow: "hidden",
     fontFamily: tokens.chromeFont,
     fontSize: fontSize.ui,
     lineHeight: "18px",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
   },
   // The switcher keeps its size while its count shows; once the count
   // has gone it gives way with the parent's title.
@@ -368,7 +401,6 @@ const styles = stylex.create({
     minWidth: 0,
   },
   counterYields: { flexShrink: 1 },
-  separator: { flexShrink: 0, stroke: tokens.inkFaint },
   control: { display: "inline-flex", minWidth: 0 },
   count: {
     display: "inline-flex",
@@ -377,7 +409,6 @@ const styles = stylex.create({
     minWidth: 0,
     paddingBlock: 0,
     paddingInline: "5px",
-    borderWidth: 0,
     borderRadius: radius.small,
     backgroundColor: tokens.tray,
     color: tokens.ink,
@@ -387,11 +418,7 @@ const styles = stylex.create({
     whiteSpace: "nowrap",
     cursor: "pointer",
   },
-  name: {
-    minWidth: 0,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-  },
+  name: { minWidth: 0 },
   // A short name stays whole as the bar narrows; a long one keeps a few
   // words before its ellipsis. 40px is the switcher's chevrons and padding.
   keeps: (letters: number) => ({
@@ -403,35 +430,19 @@ const styles = stylex.create({
     flexShrink: 0,
     gap: "4px",
     color: tokens.inkMuted,
-    fontVariantNumeric: "tabular-nums",
   },
   dot: { color: tokens.inkFaint },
-  chevron: {
-    flexShrink: 0,
-    fill: "none",
-    stroke: tokens.inkMuted,
-    strokeLinecap: "round",
-    strokeLinejoin: "round",
-    strokeWidth: 1.2,
-  },
+  chevron: { width: "10px", height: "10px", color: tokens.inkMuted },
   // Kept inside a narrow window; the rest is the shared menu.
   menu: { width: "min(330px, calc(100vw - 16px))" },
-  rowCurrent: { backgroundColor: tokens.tray, cursor: "default" },
+  rowCurrent: { cursor: "default" },
   number: {
     flexShrink: 0,
     width: "12px",
     color: tokens.inkFaint,
-    fontFamily: tokens.chromeFont,
-    fontVariantNumeric: "tabular-nums",
     fontSize: fontSize.small,
     lineHeight: "14px",
   },
   numberHere: { color: tokens.accent },
-  title: {
-    flex: "1 1 0",
-    minWidth: 0,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-  },
+  title: { flex: "1 1 0", minWidth: 0 },
 });

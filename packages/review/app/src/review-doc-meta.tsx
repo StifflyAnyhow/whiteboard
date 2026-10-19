@@ -1,4 +1,5 @@
 import { fontSize } from "@canvas/scale.stylex";
+import { Button } from "@canvas/ui/button";
 import {
   type ReviewBoardPlace,
   type ReviewDiffStats,
@@ -102,7 +103,9 @@ export function ReviewDocumentMetaLine({
 
   const updatedLabel =
     Number.isFinite(review.updatedAtMs) && relativeTimeNowMs != null
-      ? relativeTimeLabel(review.updatedAtMs, relativeTimeNowMs)
+      ? formatRelativeTime(review.updatedAtMs, relativeTimeNowMs, {
+          short: true,
+        })
       : null;
 
   // The branch stack leads, a pill hidden unless the board is in one.
@@ -147,13 +150,9 @@ export function ReviewDocumentMetaLine({
           {retrySave && (
             <>
               {" · "}
-              <button
-                type="button"
-                onClick={retrySave}
-                {...stylex.props(styles.retry)}
-              >
+              <Button variant="link" xstyle={styles.retry} onClick={retrySave}>
                 Retry
-              </button>
+              </Button>
             </>
           )}
         </span>
@@ -203,30 +202,6 @@ function reviewDiffStats(diff: {
   return summarizeReviewDiffFiles(diff.files);
 }
 
-/** "6d ago": a time not long past, else its date. */
-export function relativeTimeLabel(
-  timeMs: number,
-  nowMs: number,
-): string | null {
-  if (!Number.isFinite(timeMs)) return null;
-  const minutes = Math.floor(Math.max(0, nowMs - timeMs) / 60_000);
-
-  if (minutes < 1) return "just now";
-
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-
-  if (days < 7) return `${days}d ago`;
-
-  return new Date(timeMs).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
-}
-
 const styles = stylex.create({
   header: {
     width: `min(100%, ${tokens.reviewProseMaxWidth})`,
@@ -248,13 +223,5 @@ const styles = stylex.create({
   },
   fixed: { flexShrink: 0 },
   failed: { color: tokens.changeRemoved },
-  retry: {
-    padding: 0,
-    borderWidth: 0,
-    backgroundColor: "transparent",
-    color: "inherit",
-    font: "inherit",
-    textDecoration: "underline",
-    cursor: "pointer",
-  },
+  retry: { color: "inherit", textDecorationLine: "underline" },
 });

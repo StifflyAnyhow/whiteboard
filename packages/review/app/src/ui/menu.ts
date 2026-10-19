@@ -55,6 +55,7 @@ export const menuStyles = stylex.create({
     margin: 0,
     padding: "4px",
     overflowY: "auto",
+    fontFamily: tokens.chromeFont,
     overscrollBehavior: "contain",
     // Its trigger's row may not wrap; the menu does.
     whiteSpace: "normal",
@@ -71,6 +72,13 @@ export const menuStyles = stylex.create({
   },
   label: {
     padding: "6px 8px 4px",
+  },
+  // A hairline between groups of items.
+  separator: {
+    flex: "none",
+    height: "1px",
+    marginBlock: "4px",
+    backgroundColor: tokens.ruleSoft,
   },
   item: {
     display: "flex",
