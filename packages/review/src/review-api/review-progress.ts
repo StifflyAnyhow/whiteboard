@@ -1,5 +1,7 @@
 import {
   type LensSource,
+  SelectionUnavailableError,
+  type SelectionUnavailableReason,
   comparisonKey,
   resolveDiffSelection,
   selectionKey,
@@ -22,6 +24,8 @@ import {
   selectionReferences,
 } from "./document.js";
 import { resolveFileLens, uncategorizedSources } from "./file-lenses.js";
+import { ReviewInputError } from "./input-error.js";
+import { textualRows } from "./lens-alignment.js";
 import type { LocalReviewData } from "./local-data.js";
 import type { ReviewStore, Snapshot } from "./store.js";
 
@@ -45,7 +49,7 @@ export const progressUpdateSchema = z.strictObject({
 
 export interface ReviewProgress {
   complete?: boolean;
-  unavailableSelections?: Record<string, string>;
+  unavailableSelections?: Record<string, SelectionUnavailableReason>;
   files: CoverageFile[];
   /** Changed files of the comparisons that references with their own pins
    * named, by `comparisonKey` and then path. They are not the document's
@@ -135,7 +139,7 @@ export async function reviewProgress(
   const alignments = new Map(comparison.alignments);
   const resolvedSelections: Record<string, FileLineRange[]> = {};
 
-  const unavailableSelections: Record<string, string> = {};
+  const unavailableSelections: Record<string, SelectionUnavailableReason> = {};
   const pendingSources = new Set<string>();
 
   const resolve = async (source: LensSource): Promise<FileLineRange[]> => {
@@ -174,7 +178,8 @@ export async function reviewProgress(
     let rows = file && ownAlignments.get(file.path);
 
     // Context-only files are absent from the changed-file stream. Read both pins
-    // and require equality rather than inventing correspondence for missing diffs.
+    // and require equality rather than inventing correspondence for missing
+    // diffs; a file on one side only, such as an untracked one, is that side.
     if (!file && counting && !own) {
       pendingSources.add(key);
 
@@ -182,20 +187,43 @@ export async function reviewProgress(
     }
 
     if (!file) {
-      const [base, head] = await Promise.all([
-        data.file(sourcePins, "base", source.file),
-        data.file(sourcePins, "head", source.file),
-      ]);
+      const [base, head] = await Promise.all(
+        (["base", "head"] as const).map((side) =>
+          data.file(sourcePins, side, source.file).then(
+            (value) => value.text,
+            (error) => {
+              if (error instanceof ReviewInputError && error.status === 404)
+                return null;
+              throw error;
+            },
+          ),
+        ),
+      );
 
-      if (base.text !== head.text)
-        throw new Error("Changed context file has no alignment.");
-      rows = Array.from(
-        { length: base.text.split("\n").length },
-        (_, line) => [line, line] as const,
+      if (base === null && head === null)
+        throw new SelectionUnavailableError(
+          "missing_file",
+          "File is unavailable at these pins.",
+        );
+
+      if (base !== null && head !== null && base !== head)
+        throw new SelectionUnavailableError(
+          "no_alignment",
+          "Changed context file has no alignment.",
+        );
+      rows = textualRows(
+        source.file,
+        "",
+        base?.split("\n").length ?? 0,
+        head?.split("\n").length ?? 0,
       );
     }
 
-    if (!rows) throw new Error("File has no text alignment.");
+    if (!rows)
+      throw new SelectionUnavailableError(
+        "no_alignment",
+        "File has no text alignment.",
+      );
 
     const result = resolveDiffSelection(
       source,
@@ -211,9 +239,9 @@ export async function reviewProgress(
   const resolveAvailable = async (source: LensSource) => {
     try {
       return await resolve(source);
-    } catch {
+    } catch (error) {
       unavailableSelections[selectionKey(source)] =
-        "Source links need updating at these pins";
+        error instanceof SelectionUnavailableError ? error.reason : "other";
 
       return [];
     }
@@ -305,7 +333,7 @@ export async function reviewProgress(
   });
 
   const progress: ReviewProgress = {
-    complete: !counting,
+    complete: !counting && !pendingSources.size,
     files,
     referenceFiles,
     lenses,
