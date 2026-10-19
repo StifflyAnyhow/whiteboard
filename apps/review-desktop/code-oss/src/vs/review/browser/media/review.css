@@ -48,6 +48,33 @@
   overflow: hidden;
 }
 
+/* Native scrollers take the canvas's scrollbar pill. */
+:where(.monaco-workbench.review-workbench, .monaco-workbench.review-workbench *)::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+:where(.monaco-workbench.review-workbench, .monaco-workbench.review-workbench *)::-webkit-scrollbar-track,
+:where(.monaco-workbench.review-workbench, .monaco-workbench.review-workbench *)::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+:where(.monaco-workbench.review-workbench, .monaco-workbench.review-workbench *)::-webkit-scrollbar-thumb {
+  min-width: 32px;
+  min-height: 32px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--vscode-scrollbarSlider-background) padding-box;
+}
+
+:where(.monaco-workbench.review-workbench, .monaco-workbench.review-workbench *)::-webkit-scrollbar-thumb:hover {
+  background: var(--vscode-scrollbarSlider-hoverBackground) padding-box;
+}
+
+:where(.monaco-workbench.review-workbench, .monaco-workbench.review-workbench *)::-webkit-scrollbar-thumb:active {
+  background: var(--vscode-scrollbarSlider-activeBackground) padding-box;
+}
+
 /* The sidebar meets the board at a plain hairline: no depth shadow on the
    editor's edges, which light themes draw. */
 .monaco-workbench .part.editor::after {
@@ -1752,14 +1779,35 @@ body
   overflow-y: auto;
 }
 
-/* Search, This board and Recent: one scroll, each list at its own
-   height, each section a step below the one above. */
+/* Search, This board and Recent, each a step below the one above. Only
+   Recent scrolls, unless a search lists matches. */
+.monaco-workbench .review-sidebar-pane-body.review-sidebar-stack {
+  display: flex;
+  flex-direction: column;
+  overflow-y: hidden;
+}
+
 .monaco-workbench .review-sidebar-stack-body.review-canvas-root {
+  flex: none;
   height: auto;
   min-height: 0;
   /* The canvas root's size containment would collapse a list in a stack. */
   container-type: normal;
   background-color: transparent;
+}
+
+.monaco-workbench .review-sidebar-stack-body.review-sidebar-recent {
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
+.monaco-workbench .review-sidebar-pane-body.review-sidebar-stack:has([data-searching]) {
+  overflow-y: auto;
+}
+
+.monaco-workbench .review-sidebar-stack:has([data-searching]) > .review-sidebar-stack-body.review-sidebar-recent {
+  flex: none;
+  overflow-y: visible;
 }
 
 /* This board under Search, a section's step below it; it steps aside
