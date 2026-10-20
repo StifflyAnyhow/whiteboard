@@ -10,7 +10,7 @@ import { ITextModelService } from "../../editor/common/services/resolverService.
 import { ILanguageService } from "../../editor/common/languages/language.js";
 import { URI } from "../../base/common/uri.js";
 import { Event } from "../../base/common/event.js";
-import { DisposableMap, DisposableStore } from "../../base/common/lifecycle.js";
+import { DisposableMap, DisposableStore, MutableDisposable, toDisposable } from "../../base/common/lifecycle.js";
 import { CancellationError } from "../../base/common/errors.js";
 import { IInstantiationService } from "../../platform/instantiation/common/instantiation.js";
 import { ServiceCollection } from "../../platform/instantiation/common/serviceCollection.js";
@@ -92,9 +92,13 @@ export function createStructuralDiffEditors(
 	}));
 	const unchanged = new Set(entries.filter(e => e.file.status === "unchanged").map(e => e.file.path));
 	const pairs = new Map(resolvedEntries.map(e => [e.original!.toString() + "\n" + e.modified!.toString(), e.file.path]));
+	// One provider per file, so they share one session listener.
+	const providers = new Set<(files: ReadonlySet<string>) => void>();
+	lifetime.add(session.onDidChange(change => { for (const notify of [...providers]) notify(change.files); }));
+	const onDidChangeFiles: Event<ReadonlySet<string>> = notify => { providers.add(notify); return toDisposable(() => providers.delete(notify)); };
 	const factory: IDiffProviderFactoryService = {
 		_serviceBrand: undefined,
-		createDiffProvider: () => new StructuralDiffProvider(session, pairs, unchanged),
+		createDiffProvider: () => new StructuralDiffProvider(session, pairs, unchanged, onDidChangeFiles),
 	};
 	const child = lifetime.add(
 		instantiation.createChild(new ServiceCollection([IDiffProviderFactoryService, factory])),
@@ -109,8 +113,8 @@ let structuralViewId = 0;
 export class StructuralDiffProvider implements IDocumentDiffProvider {
 	private path: string | undefined;
 	readonly onDidChange: Event<void>;
-	constructor(private readonly session: StructuralDiffSession, private readonly pairs: ReadonlyMap<string, string>, private readonly unchanged: ReadonlySet<string>) {
-		this.onDidChange = Event.map(Event.filter(session.onDidChange, change => this.path !== undefined && change.files.has(this.path)), () => undefined);
+	constructor(private readonly session: StructuralDiffSession, private readonly pairs: ReadonlyMap<string, string>, private readonly unchanged: ReadonlySet<string>, onDidChangeFiles: Event<ReadonlySet<string>>) {
+		this.onDidChange = Event.map(Event.filter(onDidChangeFiles, files => this.path !== undefined && files.has(this.path)), () => undefined);
 	}
 	/** A lens can expose a child of a collapsed outer scope, so include both until it clips the outer gap. */
 	contextGapsForLens(): IDocumentDiff['contextGaps'] {
@@ -206,27 +210,39 @@ function attachStructuralEditors(
 	const editors = instantiation.invokeFunction((a) => a.get(ICodeEditorService));
 	const sides = new Map(entries.flatMap((e) => [[e.original!.toString(), e.file.path], [e.modified!.toString(), e.file.path]] as const));
 	const watched = lifetime.add(new DisposableMap<IDiffEditor, DisposableStore>());
+	const pathIn = (model: ITextModel | null | undefined) => model ? sides.get(model.uri.with({ fragment: "" }).toString()) : undefined;
 	function watch(editor: IDiffEditor) {
 		const widget = editor as unknown as { unchangedRegions?: IObservable<readonly UnchangedRegion[]> };
 		if (!widget.unchangedRegions) return;
 		const store = new DisposableStore();
 		watched.set(editor, store);
+		// Every diff editor in the window arrives here; only the comparison's get controls.
+		const attached = store.add(new MutableDisposable<DisposableStore>());
+		const sync = () => {
+			const model = editor.getModel();
+			if (!pathIn(model?.original) && !pathIn(model?.modified)) attached.clear();
+			else attached.value ??= attach(editor, widget.unchangedRegions!);
+		};
+		store.add(editor.onDidChangeModel(sync));
+		sync();
+	}
+	function attach(editor: IDiffEditor, unchangedRegions: IObservable<readonly UnchangedRegion[]>): DisposableStore {
+		const store = new DisposableStore();
 		// A reused editor swaps one side's model at a time.
-		const pathIn = (model: ITextModel | null) => model ? sides.get(model.uri.with({ fragment: "" }).toString()) : undefined;
 		const pathOf = () => {
 			const model = editor.getModel();
-			const path = pathIn(model?.original ?? null);
-			return path === pathIn(model?.modified ?? null) ? path : undefined;
+			const path = pathIn(model?.original);
+			return path === pathIn(model?.modified) ? path : undefined;
 		};
 		const sideOf = (side: ICodeEditor) => () => pathIn(side.getModel());
 		const hover = new StructuralFoldHover();
-		store.add(new StructuralFoldControls(editor.getOriginalEditor(), "lhs", sideOf(editor.getOriginalEditor()), session, widget.unchangedRegions, hover, viewed));
-		store.add(new StructuralFoldControls(editor.getModifiedEditor(), "rhs", sideOf(editor.getModifiedEditor()), session, widget.unchangedRegions, hover, viewed));
+		store.add(new StructuralFoldControls(editor.getOriginalEditor(), "lhs", sideOf(editor.getOriginalEditor()), session, unchangedRegions, hover, viewed));
+		store.add(new StructuralFoldControls(editor.getModifiedEditor(), "rhs", sideOf(editor.getModifiedEditor()), session, unchangedRegions, hover, viewed));
 		let revealed = new Set<UnchangedRegion>();
 		store.add(
 			autorun((reader) => {
 				const path = pathOf();
-				const regions = widget.unchangedRegions!.read(reader);
+				const regions = unchangedRegions.read(reader);
 				if (!path || !session.getTextDiff(path)) return;
 				let gaps: StructuralGap[] | undefined;
 				const next = new Set<UnchangedRegion>();
@@ -257,6 +273,7 @@ function attachStructuralEditors(
 				revealed = next;
 			}),
 		);
+		return store;
 	}
 
 	lifetime.add(editors.onDiffEditorRemove(editor => watched.deleteAndDispose(editor)));
