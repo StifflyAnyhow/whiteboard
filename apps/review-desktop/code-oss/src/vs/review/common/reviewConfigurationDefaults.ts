@@ -63,6 +63,8 @@ export const reviewConfigurationDefaults = {
 	'security.workspace.trust.enabled': false,
 	'js/ts.experimental.useTsgo': true,
 	'typescript.experimental.useTsgo': true,
+	// Review files are read-only: a squiggle names an error the reader cannot fix.
+	'problems.visibility': false,
 	'workbench.enableExperiments': false,
 	'workbench.commandPalette.experimental.enableNaturalLanguageSearch': false,
 	'workbench.settings.enableNaturalLanguageSearch': false,
@@ -139,6 +141,9 @@ export const curatedExtensionConfigurationDefaults = {
 	'go.survey.prompt': false,
 	// Prompts to `go install` newer tools against a toolchain Review does not ship.
 	'go.toolsManagement.checkForUpdates': 'off',
+	// These run the tests or offer to scan the module.
+	'go.enableCodeLens': { runtest: false },
+	'go.diagnostic.vulncheck': 'Off',
 
 	// "This file is not linked to a Cargo project" — routine when the review is
 	// scoped to a subdirectory of a workspace.
@@ -149,6 +154,9 @@ export const curatedExtensionConfigurationDefaults = {
 	'rust-analyzer.checkOnSave': false,
 	'rust-analyzer.lens.run.enable': false,
 	'rust-analyzer.lens.debug.enable': false,
+	// These run the checkout's build scripts and proc macros; proc macros imply build scripts.
+	'rust-analyzer.cargo.buildScripts.enable': false,
+	'rust-analyzer.procMacro.enable': false,
 
 	// The Swift extension can offer to install Swiftly. Review uses the Swift
 	// toolchain that the user installed and made available on the shell PATH.
