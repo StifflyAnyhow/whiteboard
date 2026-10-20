@@ -53,6 +53,16 @@ function fetchError(stderr: string, publishing: boolean): ReviewInputError {
       409,
     );
 
+  if (
+    /could not read (?:username|password)|authentication failed|permission denied \(publickey|repository not found|returned error: 40[13]|\bSAML\b/i.test(
+      stderr,
+    )
+  )
+    return new ReviewInputError(
+      "Git couldn't access this GitHub repository. Your Whiteboard sign-in doesn't grant repository access, so set up Git credentials for it, then retry.",
+      409,
+    );
+
   return new ReviewInputError(
     "Could not fetch the GitHub repository. Check your connection and Git credentials for this repository, then retry.",
     409,
@@ -234,20 +244,21 @@ export async function readShareRepository(root: string) {
   return { cloneUrl };
 }
 
+/** Fetches through origin itself, so its transport and credentials apply. */
 export async function verifyShareRepository(
   root: string,
   pins: Pins | undefined,
-  repository?: { cloneUrl: string },
   commits: readonly string[] = [],
 ) {
-  const { cloneUrl } = repository ?? (await readShareRepository(root));
+  const origin = (
+    await sharedGit(root, ["remote", "get-url", "origin"])
+  ).stdout.trim();
+
   const temporary = await mkdtemp(path.join(tmpdir(), "review-share-check-"));
 
   try {
-    await fetchPinnedRepository(temporary, cloneUrl, pins, true, commits);
+    await fetchPinnedRepository(temporary, origin, pins, true, commits);
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
-
-  return { cloneUrl };
 }
