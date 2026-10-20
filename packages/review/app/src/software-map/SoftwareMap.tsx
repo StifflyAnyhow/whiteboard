@@ -15,6 +15,7 @@ import {
   documentMarker,
   mapFrameMarker,
 } from "@canvas/markers.stylex";
+import { MetaWheelZoom } from "@canvas/meta-wheel-zoom";
 import { useReviewContainer } from "@canvas/review-root-context";
 import {
   elevation,
@@ -45,7 +46,6 @@ import * as stylex from "@stylexjs/stylex";
 import {
   Background,
   BaseEdge,
-  Controls,
   EdgeLabelRenderer,
   Handle,
   MiniMap,
@@ -1539,6 +1539,15 @@ function C4MapCanvas({
         return;
       }
 
+      if (event.key === "+" || event.key === "=" || event.key === "-") {
+        event.preventDefault();
+        event.stopPropagation();
+        const instance = flowRef.current;
+        void (event.key === "-" ? instance?.zoomOut() : instance?.zoomIn());
+
+        return;
+      }
+
       const direction = c4SpatialDirectionForKey(event.key);
 
       if (direction) {
@@ -1743,7 +1752,9 @@ function C4MapCanvas({
                       }}
                     />
                   )}
-                  <Controls showInteractive={false} />
+                  {interactionMode !== "standalone" && (
+                    <MetaWheelZoom frame={keyboardTargetRef} />
+                  )}
                 </ReactFlow>
               </C4HoveredNodeContext.Provider>
             </>
