@@ -676,6 +676,11 @@ export interface ReviewColorTheme {
   kind: ReviewColorThemeKind;
 }
 
+export interface ReviewColorThemeImport {
+  theme: string;
+  colorThemes: ReviewColorTheme[];
+}
+
 export const REVIEW_COLOR_THEME_KINDS = ["dark", "light"] as const;
 
 export type ReviewColorThemeKind = (typeof REVIEW_COLOR_THEME_KINDS)[number];
@@ -802,6 +807,8 @@ export interface ReviewCanvasSettingsContent {
   theme: string;
   setTheme(id: string): Promise<string>;
   colorThemes: ReviewColorTheme[];
+  // Installs a picked .vsix or theme .json and applies it; undefined when cancelled.
+  importColorTheme(): Promise<ReviewColorThemeImport | undefined>;
   keymap: ReviewKeymapChoice;
   // A keymap only takes effect after the extension host restarts, so the
   // workbench offers the window reload. The page never forces one.
