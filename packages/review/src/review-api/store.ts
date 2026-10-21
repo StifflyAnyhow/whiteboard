@@ -2237,7 +2237,7 @@ export class ReviewStore {
         this.activity.isWorking(reviewId) ||
         snapshot.title !== "" ||
         snapshot.document.length ||
-        this.relations(reviewId).children.length
+        this.relationGraph(true).children.get(reviewId)?.length
       )
         return { deleted: false };
 
@@ -2615,12 +2615,13 @@ export class ReviewStore {
   private boardName(id: string) {
     return `"${boardTitle(this.read(id).title)}" (${id})`;
   }
-  /** The other board exists and is in the same project. */
+  /** Exists, out of Trash, same project. */
   private checkRelated(id: string, other: string) {
     if (!this.has(other))
       throw new ReviewInputError(
         `Whiteboard ${other} does not exist. Name a whiteboard by its sessionId from session_list.`,
       );
+    this.assertOutOfTrash(other);
 
     if (this.projectOf(id) !== this.projectOf(other))
       throw new ReviewInputError(
@@ -2628,13 +2629,13 @@ export class ReviewStore {
       );
   }
   /** One parent, one level: a parent is top-level and a child has no
-   * children. Null makes the board top-level. */
+   * children, Trash included. Null makes the board top-level. */
   private setParent(id: string, parentId: string | null) {
     if (parentId !== null) {
       if (parentId === id)
         throw new ReviewInputError("A whiteboard can't be its own parent.");
       this.checkRelated(id, parentId);
-      const { parents, children } = this.relationGraph();
+      const { parents, children } = this.relationGraph(true);
       const grandparent = parents.get(parentId);
 
       if (grandparent)
@@ -2655,7 +2656,7 @@ export class ReviewStore {
   }
   private setDependencies(id: string, dependsOn: readonly string[]) {
     const unique = [...new Set(dependsOn)];
-    const graph = this.relationGraph();
+    const graph = this.relationGraph(true);
 
     for (const dependency of unique) {
       if (dependency === id)

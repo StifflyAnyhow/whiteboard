@@ -562,3 +562,105 @@ it("leaves a board in Trash out of its parent's children and others' dependencie
   expect(store.relations(plan).children).toEqual([step]);
   expect(store.relations(after).dependsOn).toEqual([step]);
 });
+
+it("keeps nesting one level deep across Trash, so a restore never makes a grandchild", async () => {
+  const plan = await board("Plan");
+  const step = await board("Step");
+  const detail = await board("Detail");
+  const other = await board("Other");
+
+  await setParent(step, plan);
+
+  const lifecycle = (reviewId: string, state: "trash" | "active") =>
+    store.execute({ operation: { type: "lifecycle", state, reviewId } });
+
+  await lifecycle(plan, "trash");
+  await expect(setParent(detail, step)).rejects.toThrow(ReviewInputError);
+  await lifecycle(plan, "active");
+  expect(store.relations(plan).children).toEqual([step]);
+  expect(store.relations(detail).parentId).toBeNull();
+
+  await lifecycle(step, "trash");
+  await expect(setParent(plan, other)).rejects.toThrow(ReviewInputError);
+  await lifecycle(step, "active");
+  expect(store.relations(step).parentId).toBe(plan);
+
+  await lifecycle(plan, "trash");
+  await setParent(step, other);
+  await lifecycle(plan, "active");
+  expect(store.relations(plan).children).toEqual([]);
+  expect(store.relations(step).parentId).toBe(other);
+});
+
+it("refuses a dependency that closes a cycle through a board in Trash", async () => {
+  const a = await board("Alpha");
+  const b = await board("Bravo");
+  const c = await board("Charlie");
+
+  await setDependencies(a, [b]);
+  await setDependencies(b, [c]);
+  await store.execute({
+    operation: { type: "lifecycle", state: "trash", reviewId: b },
+  });
+
+  await expect(setDependencies(c, [a])).rejects.toThrow(ReviewInputError);
+
+  await store.execute({
+    operation: { type: "lifecycle", state: "active", reviewId: b },
+  });
+  expect(store.relations(c).dependsOn).toEqual([]);
+  expect(store.relations(a).dependsOn).toEqual([b]);
+});
+
+it("won't name a board in Trash as a parent or a dependency", async () => {
+  const plan = await board("Plan");
+  const step = await board("Step");
+  const gone = await board("Gone");
+
+  await store.execute({
+    operation: { type: "lifecycle", state: "trash", reviewId: gone },
+  });
+
+  const refusal = await setParent(step, gone).catch((error) => error);
+
+  expect(refusal).toBeInstanceOf(ReviewInputError);
+  expect(refusal.message).toMatch(/Trash/);
+  expect(refusal.message).toContain(gone);
+  await expect(setDependencies(step, [plan, gone])).rejects.toThrow(/Trash/);
+
+  expect(store.place(step).parent).toBeUndefined();
+  expect(store.relations(step).dependsOn).toEqual([]);
+});
+
+it("keeps an untouched board whose only child is in Trash: Delete… would move the child up", async () => {
+  const { id: repositoryId } = store.registerRepository(
+    path.join(directory, "repo"),
+  );
+
+  const { reviewId: plan } = await store.execute(
+    {
+      operation: {
+        type: "create",
+        title: "",
+        target: { kind: "project", repositoryId },
+      },
+    },
+    undefined,
+    { kind: "person" },
+  );
+
+  const step = await board("Step");
+
+  await setParent(step, plan);
+  await store.execute({
+    operation: { type: "lifecycle", state: "trash", reviewId: step },
+  });
+
+  expect(await store.discard(plan)).toEqual({ deleted: false });
+  expect(store.has(plan)).toBe(true);
+
+  await store.execute({
+    operation: { type: "lifecycle", state: "active", reviewId: step },
+  });
+  expect(store.relations(step).parentId).toBe(plan);
+});
