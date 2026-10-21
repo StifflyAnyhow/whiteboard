@@ -11,6 +11,7 @@ import {
   renderVcsArgs,
   runVcs,
   setLocalVcsCommandObserver,
+  spawnPiped,
 } from "./exec";
 
 const started: string[][] = [];
@@ -106,5 +107,77 @@ describe("default timeout", () => {
     expect(read).toBeGreaterThan(quick);
     expect(jj).toBe(read);
     expect(fetch).toBeGreaterThan(read);
+  });
+});
+
+describe("the subcommand decides", () => {
+  it("gives ls-remote the network's time, and a commit message is not a push", () => {
+    const fetch = defaultVcsTimeout("git", ["-C", "/repo", "fetch", "origin"]);
+
+    const quick = defaultVcsTimeout("git", [
+      "-C",
+      "/repo",
+      "rev-parse",
+      "HEAD",
+    ]);
+
+    expect(
+      defaultVcsTimeout("git", ["-C", "/repo", "ls-remote", "origin"]),
+    ).toBe(fetch);
+    expect(
+      defaultVcsTimeout("git", ["-C", "/repo", "commit", "-m", "push"]),
+    ).toBe(quick);
+  });
+
+  it("drops a hook's GIT_DIR for a call that names its repository after a leading flag", async () => {
+    const repository = mkdtempSync(path.join(tmpdir(), "vcs-exec-"));
+
+    execFileSync("git", ["init", "-q", repository]);
+    const saved = process.env.GIT_DIR;
+
+    process.env.GIT_DIR = "/nonexistent";
+
+    try {
+      const { stdout } = await runVcs("git", [
+        "--literal-pathspecs",
+        "-C",
+        repository,
+        "rev-parse",
+        "--git-dir",
+      ]);
+
+      expect(stdout.trim()).toBe(".git");
+    } finally {
+      if (saved === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = saved;
+    }
+  });
+});
+
+describe("spawnPiped", () => {
+  const waitingChild = (timeout: number) => {
+    const repository = mkdtempSync(path.join(tmpdir(), "vcs-exec-"));
+
+    execFileSync("git", ["init", "-q", repository]);
+
+    return spawnPiped("git", ["cat-file", "--batch"], {
+      cwd: repository,
+      timeout,
+    });
+  };
+
+  const closed = (child: ReturnType<typeof spawnPiped>) =>
+    new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve) =>
+        child.once("close", (code, signal) => resolve({ code, signal })),
+    );
+
+  it("kills a child that never exits once its timeout runs out", async () => {
+    const child = waitingChild(50);
+
+    await expect(closed(child)).resolves.toEqual({
+      code: null,
+      signal: "SIGTERM",
+    });
   });
 });
