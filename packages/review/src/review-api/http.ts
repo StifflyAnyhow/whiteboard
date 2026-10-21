@@ -4,7 +4,7 @@ import {
   isJsonObject,
   isStringValue,
 } from "@dev.fast/json";
-import { defaultBranch, resolveRepoContextSync } from "@dev.fast/local-vcs";
+import { defaultBranch, resolveRepoContext } from "@dev.fast/local-vcs";
 import {
   REVIEW_CLIENT_HEADER,
   REVIEW_CLIENT_REMOTE,
@@ -2006,6 +2006,7 @@ export function createReviewApi(
         (repository) => repository.id === snapshot.pins!.repositoryId,
       )?.path;
 
+    // A GitHub stack's boards may sit in any project.
     const layers = await resolveReviewStackLayers(snapshot, store.list(), {
       repositoryPath,
     });
@@ -2038,10 +2039,8 @@ export function createReviewApi(
       project,
       boards: project
         ? store
-            .list()
-            .filter(
-              (board) => board.project?.id === project.id && !board.trashedAt,
-            )
+            .listProject(project.id)
+            .filter((board) => !board.trashedAt)
             .map(withPullRequestState)
         : [],
     });
@@ -2477,7 +2476,7 @@ async function pullRequestTargets(
   if (operation.type === "set_target") board(operation.reviewId);
   const { id: repositoryId } = await register(pullRequest.repositoryPath);
 
-  const url = pullRequestAt(
+  const url = await pullRequestAt(
     pullRequest.repositoryPath,
     pullRequest.pullRequest,
   );
@@ -2499,11 +2498,14 @@ async function pullRequestTargets(
 }
 
 /** A PR's URL: as given, or its number on the checkout's GitHub repository. */
-function pullRequestAt(repositoryPath: string, pullRequest: string | number) {
+async function pullRequestAt(
+  repositoryPath: string,
+  pullRequest: string | number,
+) {
   if (isStringValue(pullRequest) && !/^\d+$/.test(pullRequest))
     return pullRequest;
 
-  const slug = resolveRepoContextSync(repositoryPath)?.githubSlug;
+  const slug = (await resolveRepoContext(repositoryPath))?.githubSlug;
 
   if (!slug)
     throw new ReviewInputError(
