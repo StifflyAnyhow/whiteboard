@@ -35,6 +35,7 @@ import {
 import { canvasQueryKeys } from "./canvas-query";
 import { DisplayedReviewVersionContext } from "./displayed-review-version-context";
 import { useReviewSession } from "./host/review-session";
+import { useOptionalReviewPanel } from "./review-panel";
 import { tokens } from "./tokens.stylex";
 
 type OpenEvent = Pick<
@@ -42,15 +43,15 @@ type OpenEvent = Pick<
   "metaKey" | "ctrlKey" | "shiftKey" | "button"
 >;
 
-function useStack(): ReviewStackResponse {
-  const review = useReviewSession().review!;
+export function useReviewStack(): ReviewStackResponse {
+  const review = useReviewSession().review;
   const version = useContext(DisplayedReviewVersionContext);
-  const inStack = Boolean(review.pullRequestNumber || review.headBranch);
+  const inStack = Boolean(review?.pullRequestNumber || review?.headBranch);
 
   // Optional context: a failed read shows none.
   const { data } = useQuery({
     queryKey: canvasQueryKeys.stack(version),
-    queryFn: ({ signal }) => review.stack(signal),
+    queryFn: ({ signal }) => review!.stack(signal),
     enabled: inStack,
     staleTime: Infinity,
     placeholderData: keepPreviousData,
@@ -61,16 +62,61 @@ function useStack(): ReviewStackResponse {
 
 const NO_STACK: ReviewStackResponse = { layers: [] };
 
-/**
- * "[stack] Stack 3 of 5 ⌄" at the start of the board's meta line, for a
- * board in a branch stack: its GitHub stack, else the reviews chained
- * through the bases they name. The menu lists the stack newest first down
- * to its base; a branch nobody reviewed yet gets a new whiteboard. Apart
- * from the board's place among boards, which the page bar shows.
- */
-export function ReviewStackSelector(): ReactElement | null {
+/** Opens a layer's whiteboard, creating it if needed; from Diff, in Diff. */
+export function useOpenStackLayer(): (
+  layer: ReviewStackLayer,
+  active: boolean,
+) => Promise<void> {
   const session = useReviewSession();
-  const review = session.review!;
+  const inDiff = useOptionalReviewPanel((state) => state.view) === "diff";
+
+  return async (layer, active) => {
+    if (!openable(layer)) return;
+
+    const reviewUuid =
+      layer.reviewUuid ??
+      (await session.review!.createBranchReview(
+        layer.branch,
+        layer.base!,
+        layer.subject ?? layer.branch,
+      ));
+
+    void session.surface.post({
+      name: "openReview",
+      args: { reviewUuid, active, ...(inDiff && { view: "diff" }) },
+    });
+  };
+}
+
+export function ReviewStackSelector(): ReactElement | null {
+  const stack = useReviewStack();
+  const openLayer = useOpenStackLayer();
+
+  return (
+    <StackPill
+      stack={stack}
+      onOpen={(layer, active) => void openLayer(layer, active)}
+    />
+  );
+}
+
+/**
+ * "[stack] Stack 3 of 5 ⌄", for a board in a branch stack: its GitHub
+ * stack, else the reviews chained through the bases they name. The menu
+ * lists the stack newest first down to its base; a branch nobody reviewed
+ * yet gets a new whiteboard. Apart from the board's place among boards,
+ * which the page bar shows.
+ */
+export function StackPill({
+  stack: { layers, base },
+  onOpen,
+  size = "small",
+}: {
+  stack: ReviewStackResponse;
+  onOpen(layer: ReviewStackLayer, active: boolean): void;
+  /** "bar" matches the Commits pill beside it. */
+  size?: "small" | "bar";
+}): ReactElement | null {
   const [open, setOpen] = useState(false);
   const container = useRef<HTMLSpanElement>(null);
   const popover = useRef<HTMLDivElement>(null);
@@ -79,8 +125,6 @@ export function ReviewStackSelector(): ReactElement | null {
     if (open) focusMenuStart(popover.current, "[aria-current]");
   }, [open]);
 
-  const { layers, base } = useStack();
-
   if (layers.length < 2) return null;
 
   const index = Math.max(
@@ -88,29 +132,13 @@ export function ReviewStackSelector(): ReactElement | null {
     layers.findIndex((layer) => layer.relation === "current"),
   );
 
-  const openLayer = async (layer: ReviewStackLayer, event: OpenEvent) => {
+  const openLayer = (layer: ReviewStackLayer, event: OpenEvent) => {
     if (!openable(layer)) return;
     setOpen(false);
-
-    const active = !(
-      event.metaKey ||
-      event.ctrlKey ||
-      event.shiftKey ||
-      event.button === 1
+    onOpen(
+      layer,
+      !(event.metaKey || event.ctrlKey || event.shiftKey || event.button === 1),
     );
-
-    const reviewUuid =
-      layer.reviewUuid ??
-      (await review.createBranchReview(
-        layer.branch,
-        layer.base!,
-        layer.subject ?? layer.branch,
-      ));
-
-    void session.surface.post({
-      name: "openReview",
-      args: { reviewUuid, active },
-    });
   };
 
   return (
@@ -126,6 +154,7 @@ export function ReviewStackSelector(): ReactElement | null {
           pillStyles.pill,
           pillStyles.accent,
           styles.pill,
+          size === "bar" && styles.pillBar,
         )}
         onClick={() => setOpen(!open)}
       >
@@ -157,11 +186,7 @@ export function ReviewStackSelector(): ReactElement | null {
             </span>
           </div>
           {[...layers].reverse().map((layer) => (
-            <LayerRow
-              key={layer.branch}
-              layer={layer}
-              onOpen={(layer, event) => void openLayer(layer, event)}
-            />
+            <LayerRow key={layer.branch} layer={layer} onOpen={openLayer} />
           ))}
           {base ? (
             <>
@@ -295,6 +320,11 @@ const styles = stylex.create({
     fontSize: fontSize.ui,
     lineHeight: leading.px16,
     cursor: "pointer",
+  },
+  pillBar: {
+    height: "26px",
+    paddingInline: space.s10,
+    fontSize: fontSize.body,
   },
   pillIcon: { width: "13px", height: "13px" },
   pillName: { fontWeight: fontWeight.medium },
