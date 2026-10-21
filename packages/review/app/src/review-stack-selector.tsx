@@ -22,7 +22,11 @@ import {
   boardTitle,
 } from "@dev.fast/review-protocol";
 import * as stylex from "@stylexjs/stylex";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import {
+  type QueryClient,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import {
   type MouseEvent,
   type ReactElement,
@@ -32,6 +36,7 @@ import {
   useState,
 } from "react";
 
+import { BoardPaintedContext } from "./board-painted";
 import { canvasQueryKeys } from "./canvas-query";
 import { DisplayedReviewVersionContext } from "./displayed-review-version-context";
 import { useReviewSession } from "./host/review-session";
@@ -47,17 +52,55 @@ export function useReviewStack(): ReviewStackResponse {
   const review = useReviewSession().review;
   const version = useContext(DisplayedReviewVersionContext);
   const inStack = Boolean(review?.pullRequestNumber || review?.headBranch);
+  // A slow read; the board paints without it.
+  const painted = useContext(BoardPaintedContext);
+
+  const queryClient = useQueryClient();
 
   // Optional context: a failed read shows none.
   const { data } = useQuery({
-    queryKey: canvasQueryKeys.stack(version),
+    queryKey: canvasQueryKeys.stack(review?.reviewId ?? "", version),
     queryFn: ({ signal }) => review!.stack(signal),
-    enabled: inStack,
+    enabled: inStack && painted,
     staleTime: Infinity,
-    placeholderData: keepPreviousData,
+    placeholderData: (previous) =>
+      previous ?? (review && cachedStack(queryClient, review.reviewId)),
   });
 
   return (inStack && data) || NO_STACK;
+}
+
+/** A board's stack before it is read: its own from another version, else
+ * one read for another board in it, seen from this board. */
+function cachedStack(
+  queryClient: QueryClient,
+  board: string,
+): ReviewStackResponse | undefined {
+  const stacks = queryClient
+    .getQueriesData<ReviewStackResponse>({
+      queryKey: ["place"],
+      predicate: (query) => query.queryKey[2] === "stack",
+    })
+    .flatMap(([key, stack]) =>
+      stack ? [{ own: key[1] === board, stack }] : [],
+    );
+
+  const own = stacks.findLast((entry) => entry.own);
+
+  if (own) return own.stack;
+
+  for (const { stack } of stacks) {
+    const at = stack.layers.findIndex((layer) => layer.reviewUuid === board);
+
+    if (at >= 0)
+      return {
+        ...stack,
+        layers: stack.layers.map((layer, index) => ({
+          ...layer,
+          relation: index < at ? "earlier" : index === at ? "current" : "later",
+        })),
+      };
+  }
 }
 
 const NO_STACK: ReviewStackResponse = { layers: [] };

@@ -171,9 +171,14 @@ it("exposes JSON section and Markdown headings plus imported PR and its place un
   const pageBar = container.querySelector("main > header")!;
 
   expect(pageBar.querySelector('[aria-label="Session views"]')).toBeNull();
-  expect(
-    pageBar.querySelector('[aria-label$=", 2 of 2 in Stack"]'),
-  ).not.toBeNull();
+  // The text draws first; its place is read beside it.
+  await act(async () => {
+    await vi.waitFor(() =>
+      expect(
+        pageBar.querySelector('[aria-label$=", 2 of 2 in Stack"]'),
+      ).not.toBeNull(),
+    );
+  });
   expect(pageBar.querySelector('[aria-label="More"]')).not.toBeNull();
 
   // Every board names its place in the page bar: a top board with its
@@ -293,4 +298,134 @@ it("reports a board's view without waiting for its diff", async () => {
     }),
   );
   expect(reportSidebar.mock.lastCall![0].files).toBeUndefined();
+});
+
+it("draws a board's text before its commits, and its siblings and itself again before any read", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    },
+  );
+  vi.stubGlobal("matchMedia", () => ({
+    matches: false,
+    addEventListener() {},
+    removeEventListener() {},
+  }));
+  store = new ReviewStore(":memory:", {
+    validatePins: async () => {},
+    validateSource: async () => {},
+    validateResource: async () => {},
+  });
+
+  const board = async (title: string, markdown = "") =>
+    (
+      await store.execute(
+        {
+          operation: {
+            type: "create",
+            title,
+            target: {
+              kind: "commits",
+              repositoryId: "repo",
+              base: "base",
+              head: "head",
+            },
+          },
+        },
+        { origin: {}, document: [{ type: "markdown", markdown }] },
+      )
+    ).reviewId;
+
+  const parent = await board("Stack");
+  const first = await board("First", "First board");
+  const second = await board("Second", "Second board");
+
+  for (const child of [first, second])
+    await store.execute({
+      operation: { type: "set_parent", reviewId: child, parentId: parent },
+    });
+
+  let letThrough!: () => void;
+  const gate = new Promise<void>((resolve) => (letThrough = resolve));
+  const requested: string[] = [];
+  let held = false;
+  const app = new Hono();
+  app.get("/reviews-api/:id/commits", async (c) => {
+    await gate;
+
+    return c.json([]);
+  });
+  app.route("/reviews-api", createReviewApi(store));
+
+  const bridge = testReviewBridge(
+    {},
+    {
+      request: async (url, init) => {
+        if (held) await new Promise(() => {});
+        requested.push(String(url));
+
+        return app.request(url, init);
+      },
+    },
+  );
+
+  const container = document.createElement("div");
+  document.body.append(container);
+  await act(async () => {
+    canvas = mountReviewCanvas(container, {
+      kind: "api",
+      reviewId: first,
+      bridge,
+    });
+  });
+  await vi.waitFor(async () => {
+    await act(async () => {});
+    expect(container.textContent).toContain("First board");
+  });
+
+  // Its commits are still being read; then its sibling is followed and read.
+  letThrough();
+  await vi.waitFor(async () => {
+    await act(async () => {});
+    expect(requested).toContainEqual(
+      expect.stringContaining(`/${second}/commits`),
+    );
+  });
+
+  // Nothing answers now: a sibling draws from what the canvas followed.
+  held = true;
+  act(() => canvas!.update({ kind: "api", reviewId: second, bridge }));
+
+  expect(container.textContent).toContain("Second board");
+
+  // Its own stream follows the board left behind, which draws at once too.
+  held = false;
+  await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+  act(() => canvas!.update({ kind: "api", reviewId: first, bridge }));
+
+  expect(container.textContent).toContain("First board");
+  expect(container.textContent).not.toContain("Second board");
+
+  // A sibling edited while away draws its edit, never what it was.
+  await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+  await store.execute({
+    operation: {
+      type: "edit",
+      reviewId: second,
+      edit: {
+        type: "update",
+        targetId: store.read(second).document[0]!.id,
+        changes: { markdown: "Second, edited" },
+      },
+    },
+  });
+  await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+  act(() => canvas!.update({ kind: "api", reviewId: second, bridge }));
+
+  expect(container.textContent).toContain("Second, edited");
+  expect(container.textContent).not.toContain("Second board");
 });

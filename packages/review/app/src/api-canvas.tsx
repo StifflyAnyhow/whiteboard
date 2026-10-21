@@ -14,6 +14,7 @@ import { ReviewApiClient, ReviewApiError } from "@review/review-api/client";
 import { elements } from "@review/review-api/document";
 import type { Snapshot } from "@review/review-api/store";
 import * as stylex from "@stylexjs/stylex";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import {
   createContext,
   memo,
@@ -51,6 +52,7 @@ import {
   type BoardEditorHost,
   BoardEditorHostContext,
 } from "./board-editor/BoardEditor";
+import { BoardPaintedContext } from "./board-painted";
 import {
   CanvasQueryProvider,
   canvasQueryKeys,
@@ -66,6 +68,7 @@ import {
   useReviewSession,
 } from "./host/review-session";
 import { checkoutUnavailable } from "./missing-checkout-banner";
+import { useBoardPlace } from "./review-doc-meta";
 import { ReviewDocumentBoundary } from "./review-document-boundary";
 import { reportReviewDocumentRenderError } from "./review-document-error-report";
 import type { ReviewTocEntry } from "./review-document-headings";
@@ -131,20 +134,74 @@ export function ApiCanvas({
   const [cursor, setCursor] = useState<AuthoringCursor | null>(null);
   const [lensCursor, setLensCursor] = useState<AuthoringCursor | null>(null);
   useEffect(() => setVersion(content.version), [content.version]);
-  const [data, setData] = useState<ApiDocumentData>();
-  const [trashedAt, setTrashedAt] = useState<string | null>(null);
+
+  const loader = useMemo(
+    () => createDocumentLoader(client, queries.queryClient),
+    [client, queries],
+  );
+
+  useEffect(() => () => loader.dispose(), [loader]);
+
+  const sourceRef = useRef<{ key: string; version: number }>(undefined);
+
+  // Native source widgets must use these pins on their first mount.
+  const present = (snapshot: Snapshot, at: number | undefined) => {
+    const key = JSON.stringify([
+      snapshot.reviewId,
+      snapshot.pins,
+      at === undefined ? "current" : at,
+    ]);
+
+    if (sourceRef.current?.key !== key)
+      sourceRef.current = { key, version: snapshot.version };
+
+    content.setSourceView?.(
+      at === undefined
+        ? { reviewId: snapshot.reviewId, kind: "current" }
+        : { reviewId: snapshot.reviewId, kind: "version", version: at },
+      resolveReviewSourceView({
+        ...snapshot,
+        version: sourceRef.current.version,
+      }),
+    );
+    content.setTitle?.(boardTitle(snapshot.title));
+  };
+
+  const cachedBoard = (at: number | undefined) =>
+    queries.queryClient.getQueryData<Snapshot>(
+      canvasQueryKeys.board(content.reviewId, at),
+    );
+
+  // A board read before draws in its first frame. Its pins reach the host
+  // here: children's mount effects run before this one's.
+  const drawn = useRef<Snapshot>(undefined);
+
+  const [data, setData] = useState(() => {
+    const snapshot = cachedBoard(content.version);
+
+    if (!snapshot) return undefined;
+    present(snapshot, content.version);
+    drawn.current = snapshot;
+
+    return loader.draft(snapshot);
+  });
+
+  const [trashedAt, setTrashedAt] = useState(drawn.current?.trashedAt ?? null);
   const dataRef = useRef(data);
   dataRef.current = data;
-  const sourceRef = useRef<{ key: string; version: number }>(undefined);
   const sourceVersion = sourceRef.current?.key;
   const [error, setError] = useState<string>();
   const [lost, setLost] = useState<string>();
   useEffect(() => {
     const { queryClient } = queries;
     const abort = new AbortController();
-    const loader = createDocumentLoader(client);
-    setData(undefined);
-    setTrashedAt(null);
+    // The last board's cleanup may have dropped this one's snapshot since.
+    const cached = drawn.current ?? cachedBoard(version);
+
+    drawn.current = undefined;
+
+    if (!cached) setData(undefined);
+    setTrashedAt(cached?.trashedAt ?? null);
     setLost(undefined);
     setActivity(undefined);
     setCursor(null);
@@ -153,40 +210,42 @@ export function ApiCanvas({
     const cursorMemory: CursorMemory = {};
     const lensMemory: CursorMemory = {};
 
+    // Only the shown snapshot's reads draw.
+    let current: Snapshot | undefined;
+
+    const update = (next: ApiDocumentData) => {
+      if (next.snapshot === current) setData(next);
+    };
+
     const show = async (snapshot: Snapshot) => {
-      setTrashedAt(snapshot.trashedAt ?? null);
-      const next = await loader.load(snapshot);
+      current = snapshot;
 
-      if (abort.signal.aborted) return;
+      try {
+        queryClient.setQueryData(
+          canvasQueryKeys.board(snapshot.reviewId, version),
+          snapshot,
+        );
+        setTrashedAt(snapshot.trashedAt ?? null);
+        present(snapshot, version);
 
-      // Native source widgets must use these pins on their first mount.
-      const key = JSON.stringify([
-        snapshot.reviewId,
-        snapshot.pins,
-        version === undefined ? "current" : version,
-      ]);
-
-      if (sourceRef.current?.key !== key)
-        sourceRef.current = { key, version: snapshot.version };
-
-      content.setSourceView?.(
-        version === undefined
-          ? { reviewId: snapshot.reviewId, kind: "current" }
-          : { reviewId: snapshot.reviewId, kind: "version", version },
-        resolveReviewSourceView({
-          ...snapshot,
-          version: sourceRef.current.version,
-        }),
-      );
-      setData(next);
-      setError(undefined);
-      content.setTitle?.(boardTitle(snapshot.title));
+        if (dataRef.current?.snapshot !== snapshot)
+          setData(loader.draft(snapshot));
+        setError(undefined);
+        update(await loader.load(snapshot, update));
+      } catch (cause) {
+        // A document problem: the stream stays healthy.
+        if (current === snapshot) setError(message(cause));
+      }
     };
 
     void (async () => {
-      if (version !== undefined) {
+      const shownOf = (snapshot: Snapshot) =>
+        `${snapshot.version}:${snapshot.pins?.worktreeRevision ?? ""}:${snapshot.sourceUnavailable ?? false}:${snapshot.trashedAt ?? ""}`;
+
+      if (cached) void show(cached);
+      else if (version !== undefined) {
         try {
-          await show(
+          void show(
             await client.read(
               `/${content.reviewId}?full=true&version=${version}`,
               abort.signal,
@@ -197,9 +256,8 @@ export function ApiCanvas({
         }
       }
 
-      let shownVersion: string | undefined;
+      let shownVersion = cached && shownOf(cached);
       let shownLinks = 0;
-      let placeRevision = 0;
       await client.follow<
         Snapshot & {
           activity: ActivitySnapshot;
@@ -221,16 +279,18 @@ export function ApiCanvas({
           // A reconnected stream restarts at 0, which also rereads.
           const place = snapshot.placeRevision ?? 0;
 
-          if (place !== placeRevision) {
-            placeRevision = place;
+          const placeRevision = canvasQueryKeys.placeRevision(content.reviewId);
+
+          if (place !== queryClient.getQueryData(placeRevision)) {
+            queryClient.setQueryData(placeRevision, place);
             void queryClient.invalidateQueries({
-              queryKey: canvasQueryKeys.allPlace(),
+              queryKey: canvasQueryKeys.allPlace(content.reviewId),
             });
           }
 
           if (version !== undefined) return;
 
-          const shown = `${snapshot.version}:${snapshot.pins?.worktreeRevision ?? ""}:${snapshot.sourceUnavailable ?? false}:${snapshot.trashedAt ?? ""}`;
+          const shown = shownOf(snapshot);
           const links = snapshot.linksRevision ?? 0;
 
           if (shownVersion === shown) {
@@ -247,16 +307,9 @@ export function ApiCanvas({
             return;
           }
 
-          try {
-            await show(snapshot);
-            shownVersion = shown;
-            shownLinks = links;
-          } catch (cause) {
-            // A failed resource or source fetch is a document problem. The
-            // stream and the activity signal are still healthy, so do not
-            // reconnect or report unknown activity.
-            if (!abort.signal.aborted) setError(message(cause));
-          }
+          shownVersion = shown;
+          shownLinks = links;
+          void show(snapshot);
         },
         (cause) => {
           setActivity("unknown");
@@ -299,9 +352,11 @@ export function ApiCanvas({
 
     return () => {
       abort.abort();
-      loader.dispose();
+      current = undefined;
+
+      if (version === undefined) unfollowed(queryClient, content.reviewId);
     };
-  }, [client, content.reviewId, version, queries]);
+  }, [client, content.reviewId, version, queries, loader]);
 
   // Read at create, so a host going offline keeps the open editors.
   const openFile = useRef(true);
@@ -513,6 +568,13 @@ export function ApiCanvas({
     if (data) content.bridge.ready();
   }, [Boolean(data), content.bridge]);
 
+  // Set once the board has painted.
+  const [painted, setPainted] = useState(false);
+
+  useEffect(() => {
+    if (data) setPainted(true);
+  }, [Boolean(data)]);
+
   const sharing = useMemo(
     () =>
       data &&
@@ -629,7 +691,9 @@ export function ApiCanvas({
                     ...readReviewNavigationRestore(session.config, {
                       softwareMapEnabled:
                         content.softwareMapEnabled === true &&
-                        data.maps.size > 0,
+                        elements(data.snapshot.document).some(
+                          (node) => node.type === "software_map",
+                        ),
                       hasChangeRange:
                         (data.snapshot.pins?.base ?? "") !==
                         (data.snapshot.pins?.head ?? ""),
@@ -676,28 +740,39 @@ export function ApiCanvas({
                                       <div
                                         {...stylex.props(styles.canvasFrame)}
                                       >
-                                        <BoardEditorHostContext.Provider
-                                          value={editorHost}
+                                        <BoardPaintedContext.Provider
+                                          value={painted}
                                         >
-                                          <CanvasDocument
-                                            data={data}
-                                            findHost={findHost}
-                                            softwareMapEnabled={
-                                              content.softwareMapEnabled ===
-                                              true
-                                            }
-                                            documentWidth={
-                                              content.documentWidth
-                                            }
-                                            tocEntries={
-                                              editorHost &&
-                                              editorToc?.reviewId ===
-                                                data.snapshot.reviewId
-                                                ? editorToc.entries
-                                                : undefined
-                                            }
-                                          />
-                                        </BoardEditorHostContext.Provider>
+                                          {version === undefined && (
+                                            <NearbyBoards
+                                              painted={painted}
+                                              client={client}
+                                              loader={loader}
+                                            />
+                                          )}
+                                          <BoardEditorHostContext.Provider
+                                            value={editorHost}
+                                          >
+                                            <CanvasDocument
+                                              data={data}
+                                              findHost={findHost}
+                                              softwareMapEnabled={
+                                                content.softwareMapEnabled ===
+                                                true
+                                              }
+                                              documentWidth={
+                                                content.documentWidth
+                                              }
+                                              tocEntries={
+                                                editorHost &&
+                                                editorToc?.reviewId ===
+                                                  data.snapshot.reviewId
+                                                  ? editorToc.entries
+                                                  : undefined
+                                              }
+                                            />
+                                          </BoardEditorHostContext.Provider>
+                                        </BoardPaintedContext.Provider>
                                       </div>
                                     </SaveMarkdown.Provider>
                                   </MapEnabled.Provider>
@@ -717,6 +792,73 @@ export function ApiCanvas({
       </CanvasQueryProvider>
     </div>
   );
+}
+
+/** Drops a board's snapshot once no stream keeps it current. */
+function unfollowed(queryClient: QueryClient, reviewId: string) {
+  queryClient.removeQueries({
+    queryKey: canvasQueryKeys.board(reviewId, undefined),
+    exact: true,
+  });
+}
+
+/** Keeps the boards beside this one cached and current, once it paints. */
+function NearbyBoards({
+  painted,
+  client,
+  loader,
+}: {
+  painted: boolean;
+  client: ReviewApiClient;
+  loader: ReturnType<typeof createDocumentLoader>;
+}) {
+  const place = useBoardPlace();
+  const board = useReviewSession().reviewId;
+  const queryClient = useQueryClient();
+
+  const nearby = [place.parent, ...place.siblings, ...(place.children ?? [])]
+    .flatMap((each) => (each && each.reviewId !== board ? [each.reviewId] : []))
+    .join(" ");
+
+  useEffect(() => {
+    if (!painted || !nearby) return;
+    const abort = new AbortController();
+    const read = new Map<string, string>();
+    let reads = Promise.resolve();
+
+    for (const reviewId of nearby.split(" "))
+      void client.follow<Snapshot & { linksRevision?: number }>(
+        reviewId,
+        abort.signal,
+        (snapshot) => {
+          queryClient.setQueryData(
+            canvasQueryKeys.board(reviewId, undefined),
+            snapshot,
+          );
+          // Activity alone sends the board again; it changes no reads.
+          const key = `${snapshot.version}:${snapshot.linksRevision ?? 0}`;
+
+          if (read.get(reviewId) === key) return;
+          read.set(reviewId, key);
+          reads = reads.then(() =>
+            loader.load(snapshot).then(
+              () => {},
+              () => {},
+            ),
+          );
+        },
+        () => unfollowed(queryClient, reviewId),
+      );
+
+    return () => {
+      abort.abort();
+
+      for (const reviewId of nearby.split(" "))
+        unfollowed(queryClient, reviewId);
+    };
+  }, [painted, nearby, client, loader, queryClient]);
+
+  return null;
 }
 
 // Activity updates only the badge; keep diagram inputs stable until document data changes.
