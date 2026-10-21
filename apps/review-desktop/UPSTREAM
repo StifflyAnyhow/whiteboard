@@ -8,8 +8,9 @@ Serialization tag: code-oss-upstream-8a7abeba
 
 Review applies these focused VS Code changes without changing the source pin:
 
-- Electron 43.7.9 (Node 24.21.0), ahead of upstream's 43.7.5; do not
-  downgrade to upstream's version when syncing:
+- Electron 43.7.9 (Node 24.21.0), ahead of upstream's 43.7.7
+  (`9592504cbb`, checked 2026-10-20); do not downgrade to upstream's version
+  when syncing:
   `4ae4d96052c5a986fe84974ed9d7b220234670b4`, `0d9ade07b6`, `d2fe6d3bf9`,
   plus the 42.10.0 authentication type update
   `28cf0a82a08a5f8e9288d19b4218ec1eb5ee46a6`. Linux dependency-list files
@@ -50,6 +51,21 @@ Review applies these focused VS Code changes without changing the source pin:
 - `@vscode/proxy-agent` 0.45.0 in the root and `remote/` manifests:
   `ca90419648a3785c1c73d59dacad43c9726d9b67`. Review moves from 0.43.0, so
   the lockfiles are regenerated rather than patched.
+- `node-pty` 1.2.0-beta.15 in the root and `remote/` manifests (ConPTY handle
+  leaks and deadlock, macOS kqueue fd leak, Windows spawn exceptions):
+  `012f594c44`.
+- `@xterm/*` at upstream's `8014e6a02f` (`@xterm/xterm` 6.1.0-beta.304) in the
+  root, `remote/` and `remote/web/` manifests, through `c840e22106`,
+  `4fd51574d3`, `f44c690a25` and `768c8ceba7`. Manifest-only upstream; stop
+  at these betas when syncing.
+- JSON, CSS and HTML language servers on `vscode-languageserver`/
+  `vscode-languageclient` 10.1.1 with upstream's `main` language-service
+  versions and the CSS server's `vscode-languageserver-types` 3.18.3
+  override: `49715cfcdb`, `f3fa55c39d`, `d693278c84`, `041d1b6643` (with its
+  `languageModelCache.ts` import). Locks are upstream's less the hoisted
+  `@vscode/extension-telemetry`.
+- `@vscode/windows-registry` 1.3.0 (`e6c5367ae8`) and, in `remote/` only,
+  `@vscode/windows-process-tree` 0.8.0 (`94aab9d0f4`).
 
 October 2026 leak, race, and crash fixes, verbatim without test hunks:
 
