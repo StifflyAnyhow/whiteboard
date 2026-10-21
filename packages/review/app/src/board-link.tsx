@@ -10,6 +10,7 @@ import {
 import { BoardIcon, PullRequestStateIcon } from "@canvas/ui/board-icons";
 import { CrumbSeparator } from "@canvas/ui/crumbs";
 import { focusStyles } from "@canvas/ui/focus";
+import { struckLinkStyles } from "@canvas/ui/struck-link";
 import { surfaceStyles } from "@canvas/ui/surface";
 import { textStyles } from "@canvas/ui/text";
 import { useTooltip } from "@canvas/ui/tooltip";
@@ -47,7 +48,7 @@ export interface BoardLinkTarget {
   updatedAt?: string;
 }
 
-function missingLabel(
+export function missingLabel(
   target: BoardLinkTarget | undefined,
   blockId: string | undefined,
 ): string {
@@ -99,7 +100,7 @@ export function BoardLink({
       <span
         ref={missingTooltip}
         data-unavailable="board"
-        {...stylex.props(styles.link, styles.missing)}
+        {...stylex.props(styles.link, struckLinkStyles.struck)}
       >
         <BoardIcon
           icon={target.icon}
@@ -387,11 +388,6 @@ const styles = stylex.create({
     color: tokens.accent,
     textDecoration: "none",
     cursor: "pointer",
-  },
-  missing: {
-    color: tokens.inkFaint,
-    textDecoration: "line-through",
-    cursor: "default",
   },
   ghostIcon: { opacity: 0.45 },
   // The link's own colour.
