@@ -15,6 +15,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { AskDesktopSync } from "./ask-dock";
 import { AskHistoryProvider } from "./ask-history";
 import { AskProjectContext, readOpenAsks } from "./ask-open-state";
+import { TestCanvasQuery } from "./canvas-query-test-utils";
 import { ReviewDebugSettingsProvider } from "./debug-settings";
 import { ReviewSessionProvider } from "./host/review-session";
 import { ReviewPanelHost } from "./review-components";
@@ -183,44 +184,48 @@ function askCanvas({
 
   /** Mounts a board's canvas, with the threads its project last left on
    * screen, as a tab switched to or a reload does. */
-  const mount = (projectId = "payments") =>
-    act(async () =>
+  const mount = async (projectId = "payments") => {
+    await act(async () =>
       root.render(
-        <ReviewSessionProvider session={session}>
-          <ReviewRootsProvider roots={roots}>
-            <div
-              ref={(element) => {
-                roots.appRef.current = element;
-              }}
-            >
-              <section
-                tabIndex={-1}
+        <TestCanvasQuery>
+          <ReviewSessionProvider session={session}>
+            <ReviewRootsProvider roots={roots}>
+              <div
                 ref={(element) => {
-                  roots.scrollRegionRef.current = element;
+                  roots.appRef.current = element;
                 }}
-              />
-              <ReviewDebugSettingsProvider>
-                <AskProjectContext.Provider value={projectId}>
-                  <ReviewPanelProvider
-                    restore={() => ({
-                      asks: readOpenAsks(session.config, projectId),
-                    })}
-                  >
-                    <ReviewProvider>
-                      <AskHistoryProvider>
-                        <AskDesktopSync />
-                        <Probe />
-                        <ReviewPanelHost />
-                      </AskHistoryProvider>
-                    </ReviewProvider>
-                  </ReviewPanelProvider>
-                </AskProjectContext.Provider>
-              </ReviewDebugSettingsProvider>
-            </div>
-          </ReviewRootsProvider>
-        </ReviewSessionProvider>,
+              >
+                <section
+                  tabIndex={-1}
+                  ref={(element) => {
+                    roots.scrollRegionRef.current = element;
+                  }}
+                />
+                <ReviewDebugSettingsProvider>
+                  <AskProjectContext.Provider value={projectId}>
+                    <ReviewPanelProvider
+                      restore={() => ({
+                        asks: readOpenAsks(session.config, projectId),
+                      })}
+                    >
+                      <ReviewProvider>
+                        <AskHistoryProvider>
+                          <AskDesktopSync />
+                          <Probe />
+                          <ReviewPanelHost />
+                        </AskHistoryProvider>
+                      </ReviewProvider>
+                    </ReviewPanelProvider>
+                  </AskProjectContext.Provider>
+                </ReviewDebugSettingsProvider>
+              </div>
+            </ReviewRootsProvider>
+          </ReviewSessionProvider>
+        </TestCanvasQuery>,
       ),
     );
+    await act(() => new Promise((resolve) => setTimeout(resolve)));
+  };
 
   /** The canvas goes, as for another tab. */
   const unmount = async () => {
@@ -562,6 +567,21 @@ it("keeps the column away across a reload, and brings back what it held", async 
   await canvas.toggle();
   expect(column()).not.toBeNull();
   expect(canvas.requested("/ask/thread-1/open")).toHaveLength(1);
+});
+
+it("marks a thread viewed when it comes on screen with the app focused", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+
+  await using canvas = askCanvas({
+    threads: [entry("latest", "board", "2026-10-13T11:00:00Z")],
+  });
+
+  await canvas.mount();
+  await canvas.toggle();
+  await vi.waitFor(() =>
+    expect(canvas.requested("/viewed")).toEqual(["/ask/latest/viewed"]),
+  );
 });
 
 it("brings back the board's latest thread when the column held nothing", async () => {
