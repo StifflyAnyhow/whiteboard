@@ -32,6 +32,8 @@ const REVIEW_VIEW_STATE_NAMESPACE = "view-state";
 
 const SCROLL_RESTORE_DEADLINE_MS = 30_000;
 
+const SCROLL_RESTORE_SETTLE_MS = 1_000;
+
 export interface PersistedReviewViewState {
   scrollTop?: number;
   activeView?: ReviewView;
@@ -248,6 +250,7 @@ function useScrollRestoration(
 
     if (!scrollRegion || scrollTop === undefined) return;
     let deadline: ReturnType<typeof setTimeout> | null = null;
+    let settle: ReturnType<typeof setTimeout> | undefined;
     let resizeObserver: ResizeObserver | null = null;
     let aborted = false;
 
@@ -266,6 +269,7 @@ function useScrollRestoration(
 
       if (deadline !== null) clearTimeout(deadline);
       deadline = null;
+      clearTimeout(settle);
       resizeObserver?.disconnect();
       resizeObserver = null;
       removeUserListeners();
@@ -281,8 +285,11 @@ function useScrollRestoration(
 
       scrollRegion.scrollTop = Math.min(scrollTop, maxScrollTop);
 
+      // Content above can still resize after the target fits.
+      clearTimeout(settle);
+
       if (scrollTop <= maxScrollTop) {
-        finish();
+        settle = setTimeout(finish, SCROLL_RESTORE_SETTLE_MS);
       }
     };
 
@@ -300,6 +307,7 @@ function useScrollRestoration(
           "Home",
           "PageDown",
           "PageUp",
+          " ",
         ].includes(event.key)
       ) {
         finish();
@@ -340,6 +348,7 @@ function useScrollRestoration(
 
     return () => {
       if (deadline !== null) clearTimeout(deadline);
+      clearTimeout(settle);
       resizeObserver?.disconnect();
       removeUserListeners();
       pendingRef.current = false;
