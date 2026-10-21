@@ -10,7 +10,8 @@ import { renderIcon } from "../../../../base/browser/ui/iconLabel/iconLabels.js"
 import { onDidChangeFullscreen, onDidChangeZoomLevel } from "../../../../base/browser/browser.js";
 import { Codicon } from "../../../../base/common/codicons.js";
 import { Emitter, Event } from "../../../../base/common/event.js";
-import { timeout } from "../../../../base/common/async.js";
+import { ThrottledDelayer } from "../../../../base/common/async.js";
+import { isCancellationError } from "../../../../base/common/errors.js";
 import { Disposable, type IDisposable, MutableDisposable, toDisposable } from "../../../../base/common/lifecycle.js";
 import { localize, localize2 } from "../../../../nls.js";
 import { Action2, registerAction2 } from "../../../../platform/actions/common/actions.js";
@@ -26,6 +27,7 @@ import type { EditorInput } from "../../../../workbench/common/editor/editorInpu
 import { IEditorService } from "../../../../workbench/services/editor/common/editorService.js";
 import { IWorkbenchLayoutService, Parts } from "../../../../workbench/services/layout/browser/layoutService.js";
 import { REVIEW_CHROME_HEIGHT } from "../../../common/reviewChrome.js";
+import { reconnectUntilAborted } from "../../../common/reviewReconnect.js";
 import { REVIEW_SIDEBAR_MINIMUM_WIDTH, TAB_COUNT_DIGITS, measuredOnce, sidebarMinimumWidth, tabsRowWidth } from "./reviewSidebarWidth.js";
 import type {
 	ReviewAskState,
@@ -155,6 +157,8 @@ export class ReviewSidebarPart extends Part {
 	/** Kept wide enough for the window controls over the top row; the
 	 * sash stops there. */
 	private fitWidth = REVIEW_SIDEBAR_MINIMUM_WIDTH;
+	/** Tabs measured; until then every layout refits. */
+	private fitted = false;
 	private tabRow: HTMLElement | undefined;
 
 	override get minimumWidth(): number {
@@ -196,7 +200,7 @@ export class ReviewSidebarPart extends Part {
 	 * switching back shows them without rebuilding the diff. */
 	private readonly fileTrees = new Map<string, HTMLElement>();
 	private filesNote: HTMLElement | undefined;
-	private rendering: Promise<void> = Promise.resolve();
+	private readonly mounting = this._register(new ThrottledDelayer<void>(0));
 	private readonly _onDidChangeTabs = this._register(new Emitter<void>());
 	/** A tab was picked, shown, hidden, or recounted. */
 	readonly onDidChangeTabs = this._onDidChangeTabs.event;
@@ -228,7 +232,8 @@ export class ReviewSidebarPart extends Part {
 
 	override layout(width: number, height: number, top: number, left: number): void {
 		super.layout(width, height, top, left);
-		this.fitControls();
+		// Controls move with zoom and full screen, not layout.
+		if (!this.fitted) this.fitControls();
 		this.foldTabs(width);
 	}
 
@@ -263,7 +268,9 @@ export class ReviewSidebarPart extends Part {
 	private fitControls(): void {
 		const controls = this.layoutService.mainContainer.querySelector(".part.titlebar .titlebar-left");
 		if (!controls || !this.element) return;
-		const width = sidebarMinimumWidth(controls.getBoundingClientRect().right, this.element.getBoundingClientRect().left, this.tabsRow.get()?.folded);
+		const tabs = this.tabsRow.get();
+		this.fitted = tabs !== undefined;
+		const width = sidebarMinimumWidth(controls.getBoundingClientRect().right, this.element.getBoundingClientRect().left, tabs?.folded);
 		if (width === this.fitWidth) return;
 		this.fitWidth = width;
 		this._onDidChange.fire(undefined);
@@ -344,11 +351,8 @@ export class ReviewSidebarPart extends Part {
 			this._register(addDisposableListener(tab, "click", () => this.pick(id)));
 		}
 
-		// A count or a tab that comes or goes moves the minimum and the fold.
 		this._register(this.onDidChangeTabs(() => {
-			this.tabsRow.stale();
-			this.fitControls();
-			if (this.element) this.foldTabs(this.element.getBoundingClientRect().width);
+			if (this.dimension) this.foldTabs(this.dimension.width);
 		}));
 
 		// The tabs are measured once the row exists, and again when the zoom
@@ -361,6 +365,8 @@ export class ReviewSidebarPart extends Part {
 		};
 		this._register(onDidChangeZoomLevel(() => requestAnimationFrame(remeasure)));
 		this._register(addDisposableListener(parent.ownerDocument.fonts, "loadingdone", remeasure));
+		// The workbench lays out for full screen first; refit next frame.
+		this._register(onDidChangeFullscreen(() => requestAnimationFrame(() => this.fitControls())));
 
 		const header = (pane: HTMLElement, title: string) => {
 			const row = $(".review-sidebar-pane-header");
@@ -459,6 +465,7 @@ export class ReviewSidebarPart extends Part {
 		const view = this.lit.pick(id, this.state.view);
 		if (view && this.reviewId) this.emitSurfaceEvent({ event: "showReviewView", view, reviewId: this.reviewId });
 		this.applyPane();
+		this._onDidChangeTabs.fire();
 	}
 
 	/** Whether the board has the tab: Diff needs a change. */
@@ -475,7 +482,6 @@ export class ReviewSidebarPart extends Part {
 			pane.tab.hidden = !this.offers(pane.id);
 			pane.element.hidden = !selected;
 		}
-		this._onDidChangeTabs.fire();
 	}
 
 	/** The tabs as the collapsed rail draws them. */
@@ -531,7 +537,7 @@ export class ReviewSidebarPart extends Part {
 		this.render();
 	}
 
-	/** Follows the board's project threads while the sidebar shows it. */
+	/** Backs off between failures like the control channel. */
 	private follow(reviewId: string | undefined): void {
 		this.following.clear();
 		if (!reviewId) return;
@@ -541,28 +547,25 @@ export class ReviewSidebarPart extends Part {
 			this.threads.set(reviewId, update);
 			if (reviewId === this.reviewId) this.render();
 		};
-		void (async () => {
-			while (!abort.signal.aborted) {
-				try {
-					const client = new ReviewApiClient(await this.connection.getConnection());
-					const response = await client.response(`/${encodeURIComponent(reviewId)}/ask/threads?watch`, { signal: abort.signal });
-					const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
-					let pending = "";
-					for (let read = await reader.read(); !read.done; read = await reader.read()) {
-						pending += read.value;
-						for (let end = pending.indexOf("\n"); end !== -1; end = pending.indexOf("\n")) {
-							// SAFETY: the server sends ReviewProjectThreads lines on this route.
-							accept(JSON.parse(pending.slice(0, end)) as ReviewProjectThreads);
-							pending = pending.slice(end + 1);
-						}
-					}
-				} catch (error) {
-					if (abort.signal.aborted) return;
-					this.logService.warn("[Whiteboard] Sidebar threads disconnected:", error);
+		void reconnectUntilAborted(abort.signal, async (onConnected) => {
+			const client = new ReviewApiClient(await this.connection.getConnection());
+			const response = await client.response(`/${encodeURIComponent(reviewId)}/ask/threads?watch`, { signal: abort.signal });
+			onConnected();
+			const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+			let pending = "";
+			for (let read = await reader.read(); !read.done; read = await reader.read()) {
+				pending += read.value;
+				for (let end = pending.indexOf("\n"); end !== -1; end = pending.indexOf("\n")) {
+					// SAFETY: the server sends ReviewProjectThreads lines on this route.
+					accept(JSON.parse(pending.slice(0, end)) as ReviewProjectThreads);
+					pending = pending.slice(end + 1);
 				}
-				await timeout(2000);
 			}
-		})();
+			if (abort.signal.aborted) return;
+			throw new Error("The threads stream ended.");
+		}, {
+			onRetry: (error) => this.logService.warn("[Whiteboard] Sidebar threads disconnected:", error),
+		});
 	}
 
 	/** What the board's Diff view reports for Lenses. */
@@ -646,7 +649,14 @@ export class ReviewSidebarPart extends Part {
 			diff: this.state.files?.count,
 			threads: boardThreads.length || undefined,
 		};
-		for (const pane of this.panes) pane.count.textContent = counts[pane.id] === undefined ? "" : String(counts[pane.id]);
+		let recounted = false;
+		for (const pane of this.panes) {
+			const count = counts[pane.id] === undefined ? "" : String(counts[pane.id]);
+			if (pane.count.textContent === count) continue;
+			pane.count.textContent = count;
+			recounted = true;
+		}
+		if (recounted) this.tabsRow.stale();
 		this.describeTabs();
 		// The blue dot: another board in the project changed since last viewed.
 		const badge = this.panes.find((pane) => pane.id === "whiteboard")?.tab.querySelector(".review-sidebar-tab-badge");
@@ -670,9 +680,9 @@ export class ReviewSidebarPart extends Part {
 		// After the counts and badges, so the rail copies this render's.
 		this._onDidChangeTabs.fire();
 
-		this.rendering = this.rendering
-			.then(() => this.mountSections())
-			.catch((error) => this.logService.warn("[Whiteboard] Sidebar sections failed:", error));
+		this.mounting.trigger(() => this.mountSections()).catch((error) => {
+			if (!isCancellationError(error)) this.logService.warn("[Whiteboard] Sidebar sections failed:", error);
+		});
 	}
 
 	private async mountSections(): Promise<void> {
