@@ -266,13 +266,6 @@
   -webkit-app-region: drag;
 }
 
-/* Flex rather than `calc(100% - <chrome>)`: the row above is the only fixed
-   height, so the tree takes whatever is left and the height is written once. */
-.monaco-workbench .part.review-explorer > .review-explorer-tree {
-  flex: 1;
-  min-height: 0;
-}
-
 /* The workbench outlines every focused element, so a click leaves a ring.
    Here the ring shows only for keyboard focus. */
 .monaco-workbench .review-titlebar-container :focus:not(:focus-visible),
@@ -634,20 +627,6 @@ body
   > .tab-actions
   .action-label.codicon {
   padding: 2px 0;
-}
-
-/* Home stays open as an editor, so back and forward pass through it, but it
-   is a window control (the house after the arrows), not a tab: the strip
-   holds only boards. Home is the one sticky editor. */
-body
-  .monaco-workbench.review-workbench
-  .part.editor
-  > .content
-  .editor-group-container
-  > .title
-  .tabs-container
-  > .tab.sticky {
-  display: none;
 }
 
 .monaco-workbench
@@ -1989,37 +1968,13 @@ body
   font-size: 12px;
 }
 
-/* Sidebar indent: 26px for the first level, 16px more per level. The tree
-   writes its own inline indent, so these rules override it. A file's
-   twistie is sized so its status mark lines up with a folder's chevron. */
+/* A file's empty twistie ends 3px past the indent, so its mark lines up
+   with a folder's chevron. */
 .monaco-workbench .review-sidebar-file-tree .monaco-tl-twistie:not(.collapsible) {
   box-sizing: border-box;
-  padding: 0 !important;
+  width: 0;
+  padding-right: 3px;
 }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="1"] .monaco-tl-twistie.collapsible { padding-left: 21px !important; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="1"] .monaco-tl-twistie:not(.collapsible) { width: 24px; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="2"] .monaco-tl-twistie.collapsible { padding-left: 37px !important; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="2"] .monaco-tl-twistie:not(.collapsible) { width: 40px; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="3"] .monaco-tl-twistie.collapsible { padding-left: 53px !important; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="3"] .monaco-tl-twistie:not(.collapsible) { width: 56px; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="4"] .monaco-tl-twistie.collapsible { padding-left: 69px !important; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="4"] .monaco-tl-twistie:not(.collapsible) { width: 72px; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="5"] .monaco-tl-twistie.collapsible { padding-left: 85px !important; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="5"] .monaco-tl-twistie:not(.collapsible) { width: 88px; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="6"] .monaco-tl-twistie.collapsible { padding-left: 101px !important; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="6"] .monaco-tl-twistie:not(.collapsible) { width: 104px; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="7"] .monaco-tl-twistie.collapsible { padding-left: 117px !important; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="7"] .monaco-tl-twistie:not(.collapsible) { width: 120px; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="8"] .monaco-tl-twistie.collapsible { padding-left: 133px !important; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="8"] .monaco-tl-twistie:not(.collapsible) { width: 136px; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="9"] .monaco-tl-twistie.collapsible { padding-left: 149px !important; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="9"] .monaco-tl-twistie:not(.collapsible) { width: 152px; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="10"] .monaco-tl-twistie.collapsible { padding-left: 165px !important; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="10"] .monaco-tl-twistie:not(.collapsible) { width: 168px; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="11"] .monaco-tl-twistie.collapsible { padding-left: 181px !important; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="11"] .monaco-tl-twistie:not(.collapsible) { width: 184px; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="12"] .monaco-tl-twistie.collapsible { padding-left: 197px !important; }
-.monaco-workbench .review-sidebar-file-tree .monaco-list-row[aria-level="12"] .monaco-tl-twistie:not(.collapsible) { width: 200px; }
 
 .monaco-workbench .review-sidebar-files-note {
   flex-shrink: 0;
@@ -2029,11 +1984,11 @@ body
 }
 
 .monaco-workbench .review-sidebar-additions {
-  color: var(--vscode-gitDecoration-addedResourceForeground, #1b9a57);
+  color: var(--vscode-gitDecoration-addedResourceForeground);
 }
 
 .monaco-workbench .review-sidebar-deletions {
-  color: var(--vscode-gitDecoration-deletedResourceForeground, #d8402c);
+  color: var(--vscode-gitDecoration-deletedResourceForeground);
 }
 
 /* Mounted lists show the sidebar background, not the board's. */
@@ -2108,25 +2063,6 @@ body
   -webkit-app-region: no-drag;
 }
 
-/* A board tab draws the canvas's icon for its board (set as a mask by the
-   board tabs contribution) in the codicon's slot. */
-.monaco-workbench .tab .monaco-icon-label.review-board-icon::before {
-  content: "" !important;
-  width: 16px;
-  background-color: currentColor;
-  -webkit-mask: var(--review-board-icon) center / 14px 14px no-repeat;
-  mask: var(--review-board-icon) center / 14px 14px no-repeat;
-}
-
-/* The changed badge on a board tab's icon: a second mask layer lets the dot
-   show through. The tab sets the box's height, so the dot is placed from the
-   icon's centre: on its top-right corner. */
-.monaco-workbench .tab .monaco-icon-label.review-board-icon.review-tab-changed::before {
-  background-image: radial-gradient(circle at calc(50% + 6px) calc(50% - 6px), var(--vscode-charts-blue) 3px, transparent 3.5px);
-  -webkit-mask: var(--review-board-icon) center / 14px 14px no-repeat, radial-gradient(circle at calc(50% + 6px) calc(50% - 6px), #000 3.5px, transparent 4px);
-  mask: var(--review-board-icon) center / 14px 14px no-repeat, radial-gradient(circle at calc(50% + 6px) calc(50% - 6px), #000 3.5px, transparent 4px);
-}
-
 /* ---------------------------------------------------------------------------
    The collapsed sidebar
 
@@ -2191,7 +2127,8 @@ body
 }
 
 /* The tab's own mark, as the sidebar draws it: changed boards, or threads
-   that want the reader. */
+   that want the reader. Ringed in what it sits on, so it reads apart from
+   the tab's chip. */
 .monaco-workbench .review-sidebar-rail-badge {
   position: absolute;
   top: 5px;
@@ -2200,10 +2137,6 @@ body
   height: 6px;
   border-radius: 999px;
   background-color: var(--vscode-charts-blue);
-}
-
-/* Ringed in what it sits on, so it reads apart from the tab's chip. */
-.monaco-workbench .review-sidebar-rail-badge {
   box-shadow: 0 0 0 1px var(--vscode-editor-background);
 }
 
