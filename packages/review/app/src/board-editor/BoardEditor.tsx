@@ -165,6 +165,17 @@ export function BoardEditor({
     const snapshot = latest.current.snapshot;
     const stored = blockIndex(storedBlocks(snapshot.document));
 
+    let sourceSelectionRevision = 0;
+
+    const stopSourceSelection = session.surface.subscribe((event) => {
+      if (
+        event.event === "editorSelectionChanged" &&
+        event.reviewId === reviewId &&
+        event.isEmpty === false
+      )
+        sourceSelectionRevision++;
+    });
+
     const uiKey = (key: string) =>
       reviewUiStateKey(
         session.config,
@@ -241,7 +252,7 @@ export function BoardEditor({
       { mount: mount.current! },
       {
         state,
-        nodeViews: nodeViews(store),
+        nodeViews: nodeViews(store, () => sourceSelectionRevision),
         attributes: { class: "review-board-editor", spellcheck: "true" },
         dispatchTransaction(tr: Transaction) {
           const before = editor.state;
@@ -513,6 +524,8 @@ export function BoardEditor({
     laidOut.observe(editor.dom);
 
     return () => {
+      stopSourceSelection();
+
       if (naming !== undefined) cancelAnimationFrame(naming);
 
       cancelAnimationFrame(settling);
