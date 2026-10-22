@@ -99,19 +99,7 @@ const loopbackOriginSchema = urlSchema("origin", (url) =>
     : "must use http://127.0.0.1:<port>",
 );
 
-export const ReviewRuntimeConfigSchema = z.strictObject({
-  serverUrl: loopbackOriginSchema,
-  reviewId: requiredString,
-  token: stringAllowEmpty,
-  wasmUrl: absoluteUrlSchema,
-  appVersion: requiredString.max(100),
-  theme: reviewThemeSchema,
-  host: z.literal("desktop"),
-});
-
-export type ReviewRuntimeConfig = z.infer<typeof ReviewRuntimeConfigSchema>;
-
-export type ReviewTheme = ReviewRuntimeConfig["theme"];
+export type ReviewTheme = z.infer<typeof reviewThemeSchema>;
 
 export type ReviewDiffSide = z.infer<typeof reviewDiffSideSchema>;
 
@@ -375,10 +363,13 @@ export interface ReviewNotification {
 
 export interface ReviewCanvasBridge {
   readonly appSessionId?: string;
-  readonly config: ReviewRuntimeConfig;
+  readonly wasmUrl: string;
+  readonly appVersion: string;
   readonly inlineEditors: ReviewInlineEditorFactory;
   readonly diffView: ReviewDiffViewFactory;
-  request(url: string, init?: RequestInit): Promise<Response>;
+  /** `path` is `/reviews-api/…`; the host adds its origin and token. */
+  request?(path: string, init?: RequestInit): Promise<Response>;
+  beacon?(path: `/${string}`, body: string): void;
   post(request: ReviewVerbRequest): Promise<ReviewVerbResponse>;
   subscribe(listener: (event: ReviewSurfaceEvent) => void): ReviewDisposable;
   currentTheme(): ReviewTheme;
@@ -424,6 +415,22 @@ export interface ReviewCanvasBridge {
   reportAsk?(state: ReviewAskState): void;
   /** Opens the sidebar on its Threads tab. */
   showThreads?(): void;
+  remoteHosts?: ReviewRemoteHostActions;
+  setTitle?(title: string): void;
+  setSourceView?(
+    selection: ReviewSourceSelection,
+    view: ReviewSourceView,
+  ): void;
+  openSource?(
+    source: ReviewApiSourceLocation,
+    range: ReviewInlineEditorRange,
+  ): Promise<void>;
+}
+
+export interface ReviewCanvasSettings {
+  softwareMapEnabled?: boolean;
+  sharingEnabled?: boolean;
+  documentWidth?: ReviewDocumentWidthChoice;
 }
 
 export interface ReviewAskState {
@@ -1031,9 +1038,6 @@ export type ReviewCanvasContent =
   | { kind: "loading" }
   | {
       kind: "api";
-      softwareMapEnabled?: boolean;
-      sharingEnabled?: boolean;
-      documentWidth?: ReviewDocumentWidthChoice;
       reviewId: string;
       /** The board's project: its boards share the threads on screen. */
       projectId?: string;
@@ -1041,17 +1045,8 @@ export type ReviewCanvasContent =
       host?: string;
       hostState?: ReviewApiSummary["hostState"];
       available?: ReviewApiSummary["available"];
-      remoteHosts?: ReviewRemoteHostActions;
+      settings?: ReviewCanvasSettings;
       bridge: ReviewCanvasBridge;
-      setTitle?(title: string): void;
-      setSourceView?(
-        selection: ReviewSourceSelection,
-        view: ReviewSourceView,
-      ): void;
-      openSource?(
-        source: ReviewApiSourceLocation,
-        range: ReviewInlineEditorRange,
-      ): Promise<void>;
     }
   | {
       kind: "error";

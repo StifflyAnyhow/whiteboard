@@ -77,11 +77,13 @@ export function ReviewLensesProvider({
   client,
   snapshot,
   coverageRevision = 0,
+  loaded,
   children,
 }: {
   client: ReviewApiClient;
   snapshot: Snapshot;
   coverageRevision?: number;
+  loaded?: ReviewProgress;
   children: ReactNode;
 }) {
   const queryClient = useQueryClient();
@@ -119,6 +121,7 @@ export function ReviewLensesProvider({
         signal,
       ),
     enabled: !snapshot.sourceUnavailable,
+    initialData: loaded,
     staleTime: Infinity,
     gcTime: 0,
   });

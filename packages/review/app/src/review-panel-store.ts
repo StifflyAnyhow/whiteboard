@@ -41,6 +41,10 @@ export interface ReviewPanelState {
    * mounted, a working thread works on, and it all shows again as it was. */
   columnHidden: boolean;
   motion: ReviewPanelMotion;
+  /** Too narrow for the contents rail: "⋯" offers the list. */
+  contentsRailHidden: boolean;
+  /** Bumped to open the contents list. */
+  contentsRequest: number;
 }
 
 export interface TraceSelection {
@@ -123,6 +127,8 @@ export interface ReviewPanelActions {
   /** Puts the column away, or brings back what it held; if it held
    * nothing, `fallback` opens in it. */
   toggleColumn: (fallback: AskView) => void;
+  setContentsRailHidden: (hidden: boolean) => void;
+  openContents: () => void;
 }
 
 export interface AskOpenOptions {
@@ -289,6 +295,8 @@ export function createReviewPanelStore({
     askSize: restored?.askSize ?? null,
     columnHidden: restored?.columnHidden ?? false,
     motion: "live",
+    contentsRailHidden: false,
+    contentsRequest: 0,
     view: initialView,
     availableViews,
     diffScope,
@@ -432,6 +440,9 @@ export function createReviewPanelStore({
           : state,
       ),
     closeOverlayTour: () => set({ overlayTour: null }),
+    setContentsRailHidden: (contentsRailHidden) => set({ contentsRailHidden }),
+    openContents: () =>
+      set((state) => ({ contentsRequest: state.contentsRequest + 1 })),
     setAvailableViews: (views) =>
       set((state) =>
         views.includes(state.view)

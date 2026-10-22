@@ -9,13 +9,17 @@ import { afterEach, expect, it, vi } from "vitest";
 import { userEvent } from "vitest/browser";
 
 import { ContentsRail } from "./contents-rail";
-import { mountReviewCanvas } from "./desktop-entry";
-import { fixtureReviewBridge, settled } from "./fixture-review-bridge";
 import type { ReviewTocEntry } from "./review-document-headings";
+import {
+  fixtureHost,
+  loadFixture,
+  mountWhiteboard,
+  settled,
+} from "./whiteboard-fixture";
 
 let root: Root | null = null;
 
-let canvas: ReturnType<typeof mountReviewCanvas> | undefined;
+let canvas: ReturnType<typeof mountWhiteboard> | undefined;
 
 afterEach(async () => {
   await act(async () => root?.unmount());
@@ -39,7 +43,6 @@ const outline = (sections: number, subsections: number): ReviewTocEntry[] =>
 function Board({ entries }: { entries: ReviewTocEntry[] }) {
   const region = useRef<HTMLElement>(null);
   const article = useRef<HTMLElement>(null);
-  const bar = useRef<HTMLElement>(null);
 
   return (
     <main
@@ -51,7 +54,7 @@ function Board({ entries }: { entries: ReviewTocEntry[] }) {
         height: "600px",
       }}
     >
-      <header ref={bar}>
+      <header>
         <button type="button">Before</button>
       </header>
       <section ref={region} tabIndex={-1} style={{ overflowY: "auto" }}>
@@ -72,7 +75,7 @@ function Board({ entries }: { entries: ReviewTocEntry[] }) {
         entries={entries}
         articleRef={article}
         scrollRegionRef={region}
-        barAnchor={bar}
+        boardTop={region}
       />
     </main>
   );
@@ -251,23 +254,17 @@ const mountBoard = async (width: number) => {
   container.style.height = "700px";
   document.body.append(container);
   await act(async () => {
-    canvas = mountReviewCanvas(
-      container,
-      {
-        kind: "api",
-        reviewId: snapshot.reviewId,
-        version: 0,
-        // Desktop's sidebar leads, so the page bar holds the ⋯ menu.
-        bridge: { ...fixtureReviewBridge({ snapshot }), reportSidebar() {} },
-      },
-      {
+    canvas = mountWhiteboard(container, loadFixture({ snapshot }), {
+      // Desktop's sidebar leads, so the page bar holds the ⋯ menu.
+      host: fixtureHost({ reportSidebar() {} }),
+      ui: {
         showMenu: (request) => {
           menu = request;
 
           return { dispose: () => {} };
         },
       },
-    );
+    });
   });
 
   const rail = () =>
@@ -332,7 +329,7 @@ it("hides the rail on a narrow board, and ⋯ opens its contents instead", async
   await act(async () => menu.onSelect("contents"));
 
   const card = document.querySelector<HTMLElement>('[role="menu"]')!;
-  const bar = board.container.querySelector("main > header")!;
+  const bar = board.container.querySelector("header")!;
 
   expect(
     [...card.querySelectorAll('[role="menuitem"]')].map(

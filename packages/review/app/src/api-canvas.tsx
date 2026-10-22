@@ -1,44 +1,23 @@
 import { fontSize, leading, space } from "@canvas/scale.stylex";
 import {
   type ReviewCanvasContent,
+  type ReviewCanvasSettings,
   type ReviewDiffViewSpec,
-  type ReviewDocumentWidthChoice,
   type ReviewInlineEditorSpec,
   boardTitle,
-  parseReviewBoardPlace,
-  parseReviewStackResponse,
   resolveReviewSourceView,
 } from "@dev.fast/review-protocol";
 import type { ActivitySnapshot } from "@review/review-api/activity";
-import { ReviewApiClient, ReviewApiError } from "@review/review-api/client";
-import { elements } from "@review/review-api/document";
+import {
+  type ReviewApiClient,
+  ReviewApiError,
+} from "@review/review-api/client";
 import type { Snapshot } from "@review/review-api/store";
 import * as stylex from "@stylexjs/stylex";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
-import {
-  createContext,
-  memo,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
-import {
-  ApiDocument,
-  type ApiDocumentData,
-  createDocumentLoader,
-  documentHasTitle,
-} from "./api-document";
-import { retainedTrace } from "./api-trace";
-import { App } from "./App";
-import type { RenderedReviewDocument } from "./App";
-import {
-  AskBoardTitleContext,
-  AskProjectContext,
-  readOpenAsks,
-} from "./ask-open-state";
+import { type ApiDocumentData, createDocumentLoader } from "./api-document";
 import { AuthoringActivityContext } from "./authoring-activity-context";
 import {
   type AuthoringCursor,
@@ -46,87 +25,52 @@ import {
   nextCursor,
 } from "./authoring-cursor";
 import { SaveMarkdown } from "./blocks";
-import { BoardCommitsContext } from "./board-commits";
 import {
-  BoardEditor,
   type BoardEditorHost,
   BoardEditorHostContext,
 } from "./board-editor/BoardEditor";
 import { BoardPaintedContext } from "./board-painted";
 import {
   CanvasQueryProvider,
+  SharedCanvasQueryClient,
   canvasQueryKeys,
   useCanvasQueryScope,
 } from "./canvas-query";
 import { ConnectionContext, HostWaiting } from "./connection-chip";
-import { DisplayedReviewVersionContext } from "./displayed-review-version-context";
 import { DrawQueueProvider } from "./draw-queue-provider";
-import { CanvasUiContext } from "./host/canvas-ui";
-import {
-  ReviewSessionProvider,
-  createReviewSession,
-  useReviewSession,
-} from "./host/review-session";
-import { checkoutUnavailable } from "./missing-checkout-banner";
+import { hostApiClient, useReviewSession } from "./host/review-session";
 import { useBoardPlace } from "./review-doc-meta";
-import { ReviewDocumentBoundary } from "./review-document-boundary";
-import { reportReviewDocumentRenderError } from "./review-document-error-report";
 import type { ReviewTocEntry } from "./review-document-headings";
 import type { ReviewFindHost } from "./review-find";
-import { ReviewLensesProvider } from "./review-lenses";
-import { ReviewPanelProvider } from "./review-panel";
-import { readReviewNavigationRestore } from "./review-view-state";
 import { SharingContext } from "./share-control";
 import { tokens } from "./tokens.stylex";
 import { Button } from "./ui/button";
+import {
+  type WhiteboardData,
+  type WhiteboardHost,
+  WhiteboardProvider,
+} from "./whiteboard";
 
 type ApiContent = Extract<ReviewCanvasContent, { kind: "api" }>;
 
-const DocumentData = createContext<ApiDocumentData | null>(null);
-
-const MapEnabled = createContext(false);
-
-// A stable component type keeps sections, diagram tours and selections mounted.
-function DocumentBody() {
-  const data = useContext(DocumentData)!;
-  const session = useReviewSession();
-  const softwareMapEnabled = useContext(MapEnabled);
-  const editing = useContext(BoardEditorHostContext) !== null;
-
-  // App keys its boundary on the review id; this one recovers on the next version.
-  return (
-    <ReviewDocumentBoundary
-      session={session}
-      revision={`${data.snapshot.reviewId}:${data.snapshot.version}:${data.snapshot.pins?.worktreeRevision ?? ""}`}
-      onError={(_revision, error) =>
-        reportReviewDocumentRenderError(session, error)
-      }
-    >
-      {editing ? (
-        <BoardEditor data={data} softwareMapEnabled={softwareMapEnabled} />
-      ) : (
-        <ApiDocument data={data} softwareMapEnabled={softwareMapEnabled} />
-      )}
-    </ReviewDocumentBoundary>
-  );
-}
+const noSettings: ReviewCanvasSettings = {};
 
 const message = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause);
 
+/** Desktop's host: follows the board's stream and builds its data and host. */
 export function ApiCanvas({
   content,
   findHost,
+  children,
 }: {
   content: ApiContent;
   findHost?: ReviewFindHost;
+  children: ReactNode;
 }) {
-  const client = useMemo(
-    () => new ReviewApiClient(content.bridge.config, content.bridge.request),
-    [content.bridge],
-  );
-
-  const queries = useCanvasQueryScope(client, content.reviewId);
+  const client = useMemo(() => hostApiClient(content.bridge), [content.bridge]);
+  const settings = content.settings ?? noSettings;
+  const queries = useCanvasQueryScope(content.bridge.request, content.reviewId);
 
   const [version, setVersion] = useState(content.version);
   const [coverageRevision, setCoverageRevision] = useState(0);
@@ -155,7 +99,7 @@ export function ApiCanvas({
     if (sourceRef.current?.key !== key)
       sourceRef.current = { key, version: snapshot.version };
 
-    content.setSourceView?.(
+    content.bridge.setSourceView?.(
       at === undefined
         ? { reviewId: snapshot.reviewId, kind: "current" }
         : { reviewId: snapshot.reviewId, kind: "version", version: at },
@@ -164,7 +108,7 @@ export function ApiCanvas({
         version: sourceRef.current.version,
       }),
     );
-    content.setTitle?.(boardTitle(snapshot.title));
+    content.bridge.setTitle?.(boardTitle(snapshot.title));
   };
 
   const cachedBoard = (at: number | undefined) =>
@@ -384,11 +328,12 @@ export function ApiCanvas({
     };
   }, [content.bridge, sourceVersion]);
 
-  const baseSession = useMemo(() => {
-    const bridge = {
+  const host = useMemo<WhiteboardHost>(
+    () => ({
       ...content.bridge,
       ...nativeSources,
-      post: async (request: Parameters<ApiContent["bridge"]["post"]>[0]) => {
+      find: findHost,
+      post: async (request) => {
         if (request.name === "openReviewRevision") {
           setVersion(
             request.args.revision === undefined
@@ -401,121 +346,9 @@ export function ApiCanvas({
 
         return content.bridge.post(request);
       },
-    };
-
-    const session = createReviewSession(bridge, {
-      jsonReview: {
-        id: content.reviewId,
-        version: () => dataRef.current?.snapshot.version,
-      },
-    });
-
-    session.softwareMapData = (model) =>
-      [...(dataRef.current?.maps.values() ?? [])].find((map) => map === model)
-        ?.pinnedData;
-
-    return session;
-  }, [content.bridge, content.reviewId, nativeSources]);
-
-  const ui = useContext(CanvasUiContext);
-
-  const session = useMemo(() => {
-    if (!data) return baseSession;
-    const snapshot = data.snapshot;
-
-    return {
-      ...baseSession,
-      review: {
-        trashedAt: snapshot.trashedAt,
-        reviewId: snapshot.reviewId,
-        host: content.host,
-        hostState: content.hostState,
-        hosts: content.remoteHosts,
-        available: content.available,
-        pins: snapshot.pins
-          ? { base: snapshot.pins.base, head: snapshot.pins.head }
-          : undefined,
-        targetKind: snapshot.target?.kind,
-        historicalRevision: version === undefined ? null : String(version),
-        updatedAtMs: Date.parse(snapshot.createdAt),
-        headBranch: snapshot.origin?.branch,
-        baseRef:
-          snapshot.origin?.baseBranch ??
-          snapshot.origin?.baseRef ??
-          (snapshot.target && "base" in snapshot.target
-            ? snapshot.target.base
-            : undefined),
-        headRef:
-          snapshot.target?.kind === "commits"
-            ? snapshot.target.head
-            : undefined,
-        pullRequestNumber: snapshot.origin?.pullRequestNumber,
-        pullRequestUrl: snapshot.origin?.pullRequestUrl,
-        traces: new Map(
-          [...data.traces].map(([id, trace]) => [id, retainedTrace(id, trace)]),
-        ),
-        place: async (signal?: AbortSignal) =>
-          parseReviewBoardPlace(
-            await client.read(`/${snapshot.reviewId}/place`, signal),
-          ),
-        stack: async (signal?: AbortSignal) =>
-          parseReviewStackResponse(
-            await client.read(
-              `/${snapshot.reviewId}/stack?version=${snapshot.version}`,
-              signal,
-            ),
-          ),
-        createBranchReview: async (
-          branch: string,
-          base: string,
-          title: string,
-        ) =>
-          (
-            await client.post<{ reviewId: string }>("/commands", {
-              operation: {
-                type: "create",
-                title,
-                target: {
-                  kind: "commits",
-                  repositoryId: snapshot.pins!.repositoryId,
-                  head: branch,
-                  base,
-                },
-              },
-            })
-          ).reviewId,
-        dismiss: async () => {
-          if (
-            ui?.confirmDelete &&
-            !(await ui.confirmDelete([snapshot.title], {
-              reviewIds: [content.reviewId],
-              trash: true,
-            }))
-          )
-            return false;
-
-          await client.personCommand({
-            type: "lifecycle",
-            reviewId: content.reviewId,
-            state: "trash",
-          });
-
-          return true;
-        },
-      },
-    };
-  }, [
-    baseSession,
-    client,
-    content.reviewId,
-    content.host,
-    content.hostState,
-    content.remoteHosts,
-    content.available,
-    data,
-    version,
-    ui,
-  ]);
+    }),
+    [content.bridge, nativeSources, findHost],
+  );
 
   // Only the latest version of a review this machine owns takes edits.
   const editable =
@@ -564,10 +397,6 @@ export function ApiCanvas({
     [client, content.reviewId, editable],
   );
 
-  useEffect(() => {
-    if (data) content.bridge.ready();
-  }, [Boolean(data), content.bridge]);
-
   // Set once the board has painted.
   const [painted, setPainted] = useState(false);
 
@@ -578,7 +407,7 @@ export function ApiCanvas({
   const sharing = useMemo(
     () =>
       data &&
-      content.sharingEnabled === true &&
+      settings.sharingEnabled === true &&
       !content.host &&
       !data.snapshot.trashedAt
         ? {
@@ -588,14 +417,7 @@ export function ApiCanvas({
             sender: data.snapshot.shared?.login,
           }
         : null,
-    [client, content.reviewId, content.sharingEnabled, content.host, data],
-  );
-
-  const pins = data?.snapshot.pins;
-
-  const boardCommits = useMemo(
-    () => (pins ? [pins.head, pins.base] : []),
-    [pins],
+    [client, content.reviewId, settings.sharingEnabled, content.host, data],
   );
 
   const trashBanner = trashedAt && (
@@ -632,31 +454,61 @@ export function ApiCanvas({
     </div>
   );
 
-  const { host, remoteHosts } = content;
+  const remoteHost = content.host;
+  const { remoteHosts } = content.bridge;
 
   const connection = useMemo(
     () =>
       lost === undefined
         ? undefined
         : {
-            host,
+            host: remoteHost,
             hosts: remoteHosts,
             detail: lost,
             reconnect: () => client.reconnect(),
           },
-    [lost, host, remoteHosts, client],
+    [lost, remoteHost, remoteHosts, client],
+  );
+
+  const contents =
+    editorHost && editorToc && editorToc.reviewId === data?.snapshot.reviewId
+      ? editorToc.entries
+      : undefined;
+
+  const board = useMemo<WhiteboardData | undefined>(
+    () =>
+      data && {
+        ...data,
+        version,
+        projectId: content.projectId,
+        host: content.host,
+        hostState: content.hostState,
+        available: content.available,
+        contents,
+        coverageRevision,
+      },
+    [
+      data,
+      version,
+      content.projectId,
+      content.host,
+      content.hostState,
+      content.available,
+      contents,
+      coverageRevision,
+    ],
   );
 
   // Loads are near-instant, so stay blank until there is data or an error.
   // Both branches root the same query provider, so its cache outlives a load.
   // Without data there is no top bar for the connection chip.
-  if (!data)
+  if (!board)
     return (
       <CanvasQueryProvider scope={queries}>
         {trashBanner}
-        {error === undefined && host && remoteHosts ? (
+        {error === undefined && remoteHost && remoteHosts ? (
           <HostWaiting
-            host={host}
+            host={remoteHost}
             hosts={remoteHosts}
             reconnect={() => client.reconnect()}
             lost={lost}
@@ -676,119 +528,56 @@ export function ApiCanvas({
       </CanvasQueryProvider>
     );
 
-  const title = boardTitle(data.snapshot.title);
-
   return (
     <div {...stylex.props(styles.canvasSurface)}>
       <CanvasQueryProvider scope={queries}>
-        <SharingContext.Provider value={sharing}>
-          <ReviewSessionProvider session={session}>
-            <AskProjectContext.Provider value={content.projectId}>
-              <AskBoardTitleContext.Provider value={title}>
-                <ReviewPanelProvider
-                  restore={() => ({
-                    asks: readOpenAsks(session.config, content.projectId),
-                    ...readReviewNavigationRestore(session.config, {
-                      softwareMapEnabled:
-                        content.softwareMapEnabled === true &&
-                        elements(data.snapshot.document).some(
-                          (node) => node.type === "software_map",
-                        ),
-                      hasChangeRange:
-                        (data.snapshot.pins?.base ?? "") !==
-                        (data.snapshot.pins?.head ?? ""),
-                      version: data.snapshot.version,
-                      commits: data.commits,
-                    }),
-                  })}
+        <SharedCanvasQueryClient.Provider value={queries.queryClient}>
+          <SharingContext.Provider value={sharing}>
+            <ConnectionContext.Provider value={connection}>
+              <AuthoringActivityContext.Provider
+                value={version === undefined ? activity : undefined}
+              >
+                <DrawQueueProvider
+                  cursor={version === undefined ? cursor : undefined}
                 >
-                  <BoardCommitsContext.Provider value={boardCommits}>
-                    <DocumentData.Provider value={data}>
-                      <ReviewLensesProvider
-                        client={client}
-                        snapshot={data.snapshot}
-                        coverageRevision={coverageRevision}
-                      >
-                        {error && (
-                          <p {...stylex.props(styles.error)} role="status">
-                            {error}
-                          </p>
-                        )}
-                        {trashBanner}
-                        <ConnectionContext.Provider value={connection}>
-                          <AuthoringActivityContext.Provider
-                            value={version === undefined ? activity : undefined}
+                  <DrawQueueProvider
+                    scope="lenses"
+                    cursor={version === undefined ? lensCursor : undefined}
+                  >
+                    <SaveMarkdown.Provider value={saveMarkdown}>
+                      <BoardPaintedContext.Provider value={painted}>
+                        <BoardEditorHostContext.Provider value={editorHost}>
+                          <WhiteboardProvider
+                            data={board}
+                            host={host}
+                            settings={settings}
                           >
-                            <DrawQueueProvider
-                              cursor={
-                                version === undefined ? cursor : undefined
-                              }
-                            >
-                              <DrawQueueProvider
-                                scope="lenses"
-                                cursor={
-                                  version === undefined ? lensCursor : undefined
-                                }
-                              >
-                                <DisplayedReviewVersionContext.Provider
-                                  value={data.snapshot.version}
-                                >
-                                  <MapEnabled.Provider
-                                    value={content.softwareMapEnabled === true}
-                                  >
-                                    <SaveMarkdown.Provider value={saveMarkdown}>
-                                      <div
-                                        {...stylex.props(styles.canvasFrame)}
-                                      >
-                                        <BoardPaintedContext.Provider
-                                          value={painted}
-                                        >
-                                          {version === undefined && (
-                                            <NearbyBoards
-                                              painted={painted}
-                                              client={client}
-                                              loader={loader}
-                                            />
-                                          )}
-                                          <BoardEditorHostContext.Provider
-                                            value={editorHost}
-                                          >
-                                            <CanvasDocument
-                                              data={data}
-                                              findHost={findHost}
-                                              softwareMapEnabled={
-                                                content.softwareMapEnabled ===
-                                                true
-                                              }
-                                              documentWidth={
-                                                content.documentWidth
-                                              }
-                                              tocEntries={
-                                                editorHost &&
-                                                editorToc?.reviewId ===
-                                                  data.snapshot.reviewId
-                                                  ? editorToc.entries
-                                                  : undefined
-                                              }
-                                            />
-                                          </BoardEditorHostContext.Provider>
-                                        </BoardPaintedContext.Provider>
-                                      </div>
-                                    </SaveMarkdown.Provider>
-                                  </MapEnabled.Provider>
-                                </DisplayedReviewVersionContext.Provider>
-                              </DrawQueueProvider>
-                            </DrawQueueProvider>
-                          </AuthoringActivityContext.Provider>
-                        </ConnectionContext.Provider>
-                      </ReviewLensesProvider>
-                    </DocumentData.Provider>
-                  </BoardCommitsContext.Provider>
-                </ReviewPanelProvider>
-              </AskBoardTitleContext.Provider>
-            </AskProjectContext.Provider>
-          </ReviewSessionProvider>
-        </SharingContext.Provider>
+                            {error && (
+                              <p {...stylex.props(styles.error)} role="status">
+                                {error}
+                              </p>
+                            )}
+                            {trashBanner}
+                            <div {...stylex.props(styles.canvasFrame)}>
+                              {version === undefined && (
+                                <NearbyBoards
+                                  painted={painted}
+                                  client={client}
+                                  loader={loader}
+                                />
+                              )}
+                              {children}
+                            </div>
+                          </WhiteboardProvider>
+                        </BoardEditorHostContext.Provider>
+                      </BoardPaintedContext.Provider>
+                    </SaveMarkdown.Provider>
+                  </DrawQueueProvider>
+                </DrawQueueProvider>
+              </AuthoringActivityContext.Provider>
+            </ConnectionContext.Provider>
+          </SharingContext.Provider>
+        </SharedCanvasQueryClient.Provider>
       </CanvasQueryProvider>
     </div>
   );
@@ -861,72 +650,6 @@ function NearbyBoards({
   return null;
 }
 
-// Activity updates only the badge; keep diagram inputs stable until document data changes.
-const CanvasDocument = memo(function CanvasDocument({
-  data,
-  findHost,
-  softwareMapEnabled,
-  documentWidth,
-  tocEntries,
-}: {
-  data: ApiDocumentData;
-  findHost?: ReviewFindHost;
-  softwareMapEnabled: boolean;
-  documentWidth?: ReviewDocumentWidthChoice;
-  /** The editor's Contents, when the board is being edited. */
-  tocEntries?: ReviewTocEntry[];
-}) {
-  const host = useReviewSession().review?.host;
-  const snapshot = data.snapshot;
-
-  const document: RenderedReviewDocument = {
-    key: snapshot.reviewId,
-    routePath: "/",
-    filePath: `review:${snapshot.reviewId}`,
-    documentSoftwareModels: [...data.maps.values()],
-    anchors: data.anchors,
-    render: DocumentBody,
-    tocEntries: tocEntries ?? data.headings.entries,
-    empty: snapshot.document.length === 0,
-    header: true,
-    databaseLens: elements(snapshot.document).some(
-      (node) => node.type === "database_lens",
-    ),
-    width: documentWidth,
-  };
-
-  return (
-    <App
-      document={document}
-      softwareMap={{
-        head:
-          [...data.maps.values()].find(
-            (map) => map.pinnedData.side === "head",
-          ) ?? null,
-        base:
-          [...data.maps.values()].find(
-            (map) => map.pinnedData.side === "base",
-          ) ?? null,
-      }}
-      softwareMapEnabled={softwareMapEnabled && data.maps.size > 0}
-      // A document without pins of its own has no change range: the Diff and
-      // Commits views hide, as for a review whose base is its head.
-      range={{
-        sourceUnavailable: snapshot.sourceUnavailable
-          ? checkoutUnavailable(host)
-          : undefined,
-        baseRef: snapshot.pins?.base ?? "",
-        headRef: snapshot.pins?.head ?? "",
-        baseCommit: snapshot.pins?.base ?? "",
-        headCommit: snapshot.pins?.head ?? "",
-        worktreeRevision: snapshot.pins?.worktreeRevision,
-      }}
-      commits={data.commits}
-      findHost={findHost}
-    />
-  );
-});
-
 const styles = stylex.create({
   canvasSurface: {
     height: "100%",
@@ -934,7 +657,12 @@ const styles = stylex.create({
     flexDirection: "column",
     minHeight: 0,
   },
-  canvasFrame: { flex: "1 1 auto", minHeight: 0 },
+  canvasFrame: {
+    display: "flex",
+    flexDirection: "column",
+    flex: "1 1 auto",
+    minHeight: 0,
+  },
   trashBanner: {
     display: "flex",
     gap: space.s12,
