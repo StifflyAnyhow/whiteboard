@@ -4,7 +4,7 @@ import { Disposable } from "../../base/common/lifecycle.js";
 import { CancellationError } from "../../base/common/errors.js";
 import { derivedWithSetter, observableValue, type ISettableObservable } from "../../base/common/observable.js";
 import { structuralFilePath, STRUCTURAL_WIRE_VERSION, type StructuralEvent, type StructuralRegion, type StructuralTextDiff } from "../common/reviewStructuralDiff.js";
-import type { StructuralDiff } from "../common/reviewProtocol.js";
+import { applyStructuralUpdate, type StructuralDiff } from "../common/reviewProtocol.js";
 import type { StructuralDiffStream } from "./reviewStructuralDiffClient.js";
 
 export interface StructuralFileResult {
@@ -31,6 +31,8 @@ export class StructuralDiffSession extends Disposable {
 	private readonly abort = new AbortController();
 	private readonly results = new Map<string, StructuralFileResult>();
 	private readonly folds = new Map<string, boolean | ISettableObservable<boolean>>();
+	/** Files the reader has seen or folded; diffr updates only relabel their folds. */
+	private readonly seen = new Set<string>();
 	private manifest: Set<string> | undefined;
 	private task: Promise<void> | undefined;
 	private finished = false;
@@ -94,9 +96,12 @@ export class StructuralDiffSession extends Disposable {
 		if (!state || typeof state === "boolean") throw new Error(`Missing root collapse state for ${path}.`);
 		return state;
 	}
-	setRegionCollapsed(path: string, id: number, collapsed: boolean): void {
+	/** The reader has had this file's code on screen. */
+	markSeen(path: string): void { if (!this.disposed) this.seen.add(path); }
+	setRegionCollapsed(path: string, id: number, collapsed: boolean, byReader = true): void {
 		const key = `${path}:${id}`;
 		if (this.disposed) return;
+		if (byReader) this.seen.add(path);
 		const state = this.folds.get(key);
 		if (typeof state === "object") state.set(collapsed, undefined);
 		else if (state !== collapsed) { this.folds.set(key, collapsed); this.notify(path); }
@@ -136,9 +141,10 @@ export class StructuralDiffSession extends Disposable {
 			if (event.type !== "start" || event.version !== STRUCTURAL_WIRE_VERSION) throw new Error("Unsupported diffr stream protocol.");
 			this.acceptManifest(event);
 		} else if (event.type === "file") this.storeFileResult(event);
+		else if (event.type === "update") this.applyUpdate(event);
 		else if (event.type === "complete") this.finishLoading(event);
-		else throw new Error(`Unexpected diffr event: ${event.type}`);
-		if (event.type === "file") this.notify(structuralFilePath(event.file));
+		else throw new Error(`Unexpected diffr event: ${(event as StructuralEvent).type}`);
+		if (event.type === "file" || event.type === "update") this.notify(structuralFilePath(event.file));
 		else this.notify(undefined, true);
 	}
 
@@ -166,7 +172,24 @@ export class StructuralDiffSession extends Disposable {
 		const path = structuralFilePath(event.file);
 		if (!this.manifest!.has(path) || this.results.has(path)) throw new Error(`Unexpected or repeated diffr result: ${path}`);
 		if (event.error) { this.results.set(path, { error: event.error.message }); return; }
-		const diff = event.diff;
+		this.storeDiff(path, event.diff);
+	}
+
+	/** Labels always apply; collapse only in files the reader has not seen, so nothing moves under them. */
+	private applyUpdate(event: Extract<StructuralEvent, { type: "update" }>): void {
+		const path = structuralFilePath(event.file);
+		const diff = this.getTextDiff(path);
+		if (!diff) throw new Error(`Unexpected diffr update: ${path}`);
+		if (event.error) return;
+		const seen = this.seen.has(path);
+		this.storeDiff(path, applyStructuralUpdate(diff, event, (region, next) => {
+			if (seen) return { ...next, collapsed: region.visibility?.collapsed };
+			this.setRegionCollapsed(path, region.fold_state_id, next.collapsed === true, false);
+			return next;
+		}));
+	}
+
+	private storeDiff(path: string, diff: StructuralDiff): void {
 		if (diff.type === "text") {
 			const seed = (region: StructuralRegion) => {
 				const key = `${path}:${region.fold_state_id}`;
@@ -199,6 +222,7 @@ export class StructuralDiffSession extends Disposable {
 		this.abort.abort();
 		this.results.clear();
 		this.folds.clear();
+		this.seen.clear();
 		this.pendingFiles.clear();
 		super.dispose();
 	}
