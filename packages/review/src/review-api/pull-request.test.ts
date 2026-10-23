@@ -201,6 +201,15 @@ describe("creating a review from a pull request URL alone", () => {
   };
 
   let ghCalls: number;
+  let openPullRequests: object[];
+
+  // The open PR #7 GitHub lists for the widgets branch.
+  const widgetsPullRequest = (title: string, baseBranch = "main") => ({
+    number: 7,
+    title,
+    head: { ref: "widgets", repo: { full_name: "acme/widget" } },
+    base: { ref: baseBranch, repo: { full_name: "acme/widget" } },
+  });
 
   const gitIn =
     (cwd: string) =>
@@ -261,6 +270,7 @@ describe("creating a review from a pull request URL alone", () => {
       isCrossRepository: true,
     };
     ghCalls = 0;
+    openPullRequests = [];
     local = openLocalReviewStore(path.join(directory, "reviews.db"), {
       manageWorkspaces: false,
       pullRequests: {
@@ -277,6 +287,8 @@ describe("creating a review from a pull request URL alone", () => {
           if (file !== "gh")
             return defaultPullRequestDeps.run(file, args, options);
           ghCalls++;
+
+          if (args[0] === "api") return JSON.stringify(openPullRequests);
 
           return JSON.stringify(pr);
         },
@@ -349,6 +361,329 @@ describe("creating a review from a pull request URL alone", () => {
       "+export const feature = 1;",
     );
     expect(userRefs(path.join(checkout, ".git"))).toBe(before);
+  });
+
+  it("keeps the same source identity when creating and retargeting by PR", async () => {
+    pr.isCrossRepository = false;
+    const created = await createFromUrl();
+    const original = local.store.read(created.reviewId);
+    const api = createReviewApi(local.store, local.data);
+
+    const response = await api.request("/commands", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        command({
+          type: "set_target",
+          reviewId: created.reviewId,
+          target: {
+            kind: "pullRequest",
+            repositoryPath: checkout,
+            pullRequest: 7,
+          },
+        }),
+      ),
+    });
+
+    expect(response.status).toBe(200);
+    const retargeted = local.store.read(created.reviewId);
+    expect(retargeted.pins).toEqual(original.pins);
+    expect(retargeted.origin).toEqual(original.origin);
+    expect(retargeted.origin).toMatchObject({
+      branch: "contributor",
+      baseBranch: "main",
+      pullRequestUrl: url,
+    });
+    expect(local.store.read(created.reviewId, original.version).origin).toEqual(
+      original.origin,
+    );
+  });
+
+  it("discovers a branch's PR without replacing its explicitly chosen comparison", async () => {
+    const git = gitIn(checkout);
+    git("fetch", "origin", "refs/pull/7/head:refs/heads/widgets");
+    openPullRequests = [widgetsPullRequest("Add widgets", "lower-pr")];
+    const registered = await local.data.register(checkout);
+
+    const created = await local.store.execute(
+      command({
+        type: "create",
+        title: "Explicit comparison",
+        target: {
+          kind: "commits",
+          repositoryId: registered.id,
+          head: "widgets",
+          base: "main",
+        },
+      }),
+    );
+
+    const snapshot = local.store.read(created.reviewId);
+    expect(snapshot.pins).toMatchObject({ head: upstreamHead(), base: trunk });
+    expect(snapshot.origin).toMatchObject({
+      pullRequestUrl: url,
+      pullRequestNumber: 7,
+      pullRequestBaseBranch: "lower-pr",
+      branch: "widgets",
+      baseBranch: "main",
+    });
+
+    const lookup = vi
+      .spyOn(local.data, "findPullRequest")
+      .mockRejectedValue(new Error("offline"));
+
+    try {
+      await local.store.execute(
+        command({
+          type: "set_target",
+          reviewId: created.reviewId,
+          target: {
+            kind: "commits",
+            repositoryId: registered.id,
+            head: "widgets",
+            base: "main",
+          },
+        }),
+      );
+      expect(local.store.read(created.reviewId).origin).toMatchObject({
+        pullRequestUrl: url,
+        pullRequestNumber: 7,
+        pullRequestBaseBranch: "lower-pr",
+      });
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
+  it("finds a PR published after a branch review without rewriting its saved pins or history", async () => {
+    const git = gitIn(checkout);
+    git("fetch", "origin", "refs/pull/7/head:refs/heads/widgets");
+    const registered = await local.data.register(checkout);
+
+    const created = await local.store.execute(
+      command({
+        type: "create",
+        title: "Before publishing",
+        target: {
+          kind: "commits",
+          repositoryId: registered.id,
+          head: "widgets",
+          base: "main",
+        },
+      }),
+    );
+
+    const saved = local.store.read(created.reviewId);
+    expect(saved.origin?.pullRequestUrl).toBeUndefined();
+    openPullRequests = [widgetsPullRequest("Published later")];
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+
+    try {
+      const projected = await local.data.discoverPullRequest(saved);
+      expect(projected.origin?.pullRequestUrl).toBe(url);
+      expect(projected.origin?.pullRequestNumber).toBe(7);
+      expect(projected.pins).toEqual(saved.pins);
+      expect(local.store.read(created.reviewId)).toEqual(saved);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("uses a linked worktree's HEAD", async () => {
+    const git = gitIn(checkout);
+    git("fetch", "origin", "refs/pull/7/head:refs/heads/widgets");
+    const linked = path.join(directory, "linked");
+    git("worktree", "add", "--quiet", linked, "widgets");
+    openPullRequests = [widgetsPullRequest("Widgets")];
+    const registered = await local.data.register(linked);
+
+    const target = {
+      kind: "worktree",
+      repositoryId: registered.id,
+      base: "main",
+    };
+
+    const created = await local.store.execute(
+      command({ type: "create", title: "Linked", target }),
+    );
+
+    expect(local.store.read(created.reviewId).origin).toMatchObject({
+      branch: "widgets",
+      pullRequestUrl: url,
+    });
+
+    const explicitHead = await local.store.execute(
+      command({
+        type: "create",
+        title: "Explicit HEAD",
+        target: {
+          kind: "commits",
+          repositoryId: registered.id,
+          head: "HEAD",
+          base: "main",
+        },
+      }),
+    );
+
+    expect(local.store.read(explicitHead.reviewId).origin?.branch).toBe(
+      "widgets",
+    );
+  });
+
+  it("clears the former branch's PR identity when moving to a different branch", async () => {
+    const git = gitIn(checkout);
+    git("fetch", "origin", "refs/pull/7/head:refs/heads/widgets");
+    openPullRequests = [widgetsPullRequest("Widgets")];
+    const registered = await local.data.register(checkout);
+
+    const created = await local.store.execute(
+      command({
+        type: "create",
+        title: "Widgets",
+        target: {
+          kind: "commits",
+          repositoryId: registered.id,
+          head: "widgets",
+          base: "main",
+        },
+      }),
+    );
+
+    expect(local.store.read(created.reviewId).origin?.pullRequestUrl).toBe(url);
+    await local.store.execute(
+      command({
+        type: "set_target",
+        reviewId: created.reviewId,
+        target: {
+          kind: "commits",
+          repositoryId: registered.id,
+          head: "main",
+          base: fork,
+        },
+      }),
+    );
+    const moved = local.store.read(created.reviewId);
+    expect(moved.origin?.branch).toBe("main");
+    expect(moved.origin?.pullRequestUrl).toBeUndefined();
+  });
+
+  it("reuses a branch board when its PR is published later", async () => {
+    const git = gitIn(checkout);
+    git("fetch", "origin", "refs/pull/7/head:refs/remotes/origin/widgets");
+    const registered = await local.data.register(checkout);
+
+    const created = await local.store.execute(
+      command({
+        type: "create",
+        title: "Before PR",
+        target: {
+          kind: "commits",
+          repositoryId: registered.id,
+          head: "origin/widgets",
+          base: "main",
+        },
+      }),
+    );
+
+    pr.isCrossRepository = false;
+    pr.headRefName = "widgets";
+    expect(await createFromUrl()).toMatchObject({
+      created: false,
+      reviewId: created.reviewId,
+    });
+    expect(local.store.list()).toHaveLength(1);
+  });
+
+  it("does not reuse a different repository’s branch board filed in the same project", async () => {
+    const other = path.join(directory, "other");
+    gitIn(directory)("clone", "-q", upstream, other);
+    pointAtUpstream(
+      path.join(other, ".git"),
+      "https://github.com/other/widget.git",
+    );
+    gitIn(other)("fetch", "origin", "refs/pull/7/head:refs/heads/widgets");
+    const registered = await local.data.register(checkout);
+    const candidate = await local.data.register(other);
+
+    const created = await local.store.execute(
+      command({
+        type: "create",
+        title: "Before PR",
+        projectId: local.store.projectOfRepository(registered.id),
+        target: {
+          kind: "commits",
+          repositoryId: candidate.id,
+          head: "widgets",
+          base: "main",
+        },
+      }),
+    );
+
+    pr.isCrossRepository = false;
+    pr.headRefName = "widgets";
+    const opened = await createFromUrl();
+    expect(opened.created).toBe(true);
+    expect(opened.reviewId).not.toBe(created.reviewId);
+    expect(local.store.read(opened.reviewId).pins?.repositoryId).toBe(
+      registered.id,
+    );
+  });
+
+  it("does not hold up unrelated saves while optional PR discovery waits", async () => {
+    const existing = await createFromUrl();
+    const git = gitIn(checkout);
+    git("fetch", "origin", "refs/pull/7/head:refs/heads/widgets");
+    const registered = await local.data.register(checkout);
+    let release!: () => void;
+    let started!: () => void;
+
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+
+    const lookup = vi
+      .spyOn(local.data, "findPullRequest")
+      .mockImplementation(async () => {
+        started();
+        await waiting;
+
+        return undefined;
+      });
+
+    const pending = local.store.execute(
+      command({
+        type: "create",
+        title: "Slow lookup",
+        target: {
+          kind: "commits",
+          repositoryId: registered.id,
+          head: "widgets",
+          base: "main",
+        },
+      }),
+    );
+
+    try {
+      await entered;
+      await local.store.execute(
+        command({
+          type: "rename",
+          reviewId: existing.reviewId,
+          title: "Save went through",
+        }),
+      );
+      expect(local.store.read(existing.reviewId).title).toBe(
+        "Save went through",
+      );
+    } finally {
+      release();
+      await pending;
+      lookup.mockRestore();
+    }
   });
 
   it("returns the existing review for a repeat, comparing against the PR's current head", async () => {

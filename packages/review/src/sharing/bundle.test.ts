@@ -143,7 +143,11 @@ it("imports a stacked board, whose origin names its base branch", async () => {
       store: {
         read: (...args) => ({
           ...fixture.store.read(...args),
-          origin: { branch: "top", baseBranch: "bottom" },
+          origin: {
+            branch: "top",
+            baseBranch: "bottom",
+            pullRequestBaseBranch: "main",
+          },
         }),
         resource: (...args) => fixture.store.resource(...args),
       },
@@ -152,6 +156,7 @@ it("imports a stacked board, whose origin names its base branch", async () => {
     expect(validateShareBundle(bundle).snapshot.origin).toEqual({
       branch: "top",
       baseBranch: "bottom",
+      pullRequestBaseBranch: "main",
     });
   } finally {
     await fixture.data.close();
